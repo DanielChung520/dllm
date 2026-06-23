@@ -31,55 +31,45 @@
 └── 可用於 LLM 推理: ~100-105GB
 ```
 
-### 各硬體平台的模型上限
+### 兩種硬體規格（軟體完全相同）
 
-| 硬體 | 記憶體 | 可同時載入 | 主力模型建議 |
-|------|--------|-----------|-------------|
-| **DGX Spark** | 128GB | 4 個共 ~38GB（30B Coder + 8B VLM + Embedding + 0.8B） | Qwen3-Coder-30B + Qwen2.5-VL-8B |
-| **Mac Studio** (M2 Ultra) | 192GB | 更多 + 更大模型 | Qwen3.5-122B + 其他 |
-| **RTX 5090** | 32GB VRAM | 1-2 個小模型 | Qwen3-Coder-8B |
-| **H100** (雙卡) | 160GB VRAM | 4+ 個大模型 | 彈性擴展 |
+| 規格 | Mac Mini M4 Pro | DGX Spark (GB-10) |
+|------|----------------|-------------------|
+| **記憶體** | 64GB 統一記憶體 | 128GB 統一記憶體 |
+| **引擎** | MLX (Metal) | vLLM (CUDA) |
+| **部署方式** | 原生 CLI（無 Docker） | Docker Compose |
+| **並發用戶** | **2-4 人** | **4-8 人** |
+| **價格帶** | $2,500-3,000 | $4,000-5,000 |
 
-### GB-10 關鍵配置限制
+**4 個模型共 ~38GB，兩台都能跑：**
 
-| 設定項 | 預設值 | 說明 |
-|--------|--------|------|
-| `gpu-memory-utilization` | 0.80 | 4 個模型共 ~38GB，空間充裕 |
-| `max-model-len` | 32768 | 30B MoE + 8B VLM 都夠用 |
-| `max-num-seqs` | 8 | 多模型並發上限 |
-| `max-concurrent-requests` | 8 | Engine Pool 並發上限 |
-| `memory_guard` | balanced | 記憶體充足，用平衡模式 |
-| Docker `mem_limit` (vLLM) | 96GB | 防止單一容器拖垮系統 |
-| 預設固定載入 | 3 個模型 | 30B Coder + 8B VLM + Embedding |
+| 模型 | 用途 | 記憶體 |
+|------|------|--------|
+| Qwen3-Coder-30B-A3B | 程式開發、問答（主力） | ~26GB |
+| Qwen2.5-VL-8B | 圖片辨識 | ~9GB |
+| BGE-M3 / Embedding | RAG 嵌入檢索 | ~2GB |
+| Qwen3.5-0.8B | 備用降載 | ~1GB |
 
-> ✅ **結論：128GB 在 4 個模型（~38GB）下非常充裕，剩餘 ~60GB 緩衝。**
+### 記憶體分配對比
 
-### 128GB 上的實際配置
-
-```toml
-[engine]
-# 開機即載入，永不卸載
-pinned_models = [
-    "qwen3-coder-30b-a3b-4bit",  # ~26GB（含 KV cache）
-    "qwen2.5-vl-8b",              # ~9GB（含 KV cache）
-    "bge-m3",                     # ~2GB
-]
-default_model = "qwen3-coder-30b-a3b-4bit"
-
-# 按需載入，閒置自動卸載
-# qwen3.5-0.8b                    # ~1GB（備用）
+**64GB Mac Mini（2-4 用戶）：**
 ```
+├── macOS + 服務: ~16GB
+├── 4 個模型:     ~38GB
+└── 緩衝:         ~10GB ⚠️
+```
+→ `memory_guard = safe`、`max_concurrent_requests = 4`、KV 上限 ~6K
 
-### 建議的產品定位
+**128GB DGX Spark（4-8 用戶）：**
+```
+├── Linux + 服務: ~12GB
+├── 4 個模型:     ~38GB
+└── 緩衝:         ~78GB ✅
+```
+→ `memory_guard = balanced`、`max_concurrent_requests = 8`、KV 上限 ~8K
 
-**128GB GB-10 = 「程式開發 + 多模態 + 知識庫」的輕量 AI Box**
-
-- 主力：Qwen3-Coder-30B（程式生成、企業問答）
-- 視覺：Qwen2.5-VL-8B（圖片辨識、文件 OCR）
-- 檢索：BGE-M3（RAG 嵌入）
-- 備用：Qwen3.5-0.8B（簡單降載）
-- 功能：文件上傳、知識庫問答、資料庫查詢、圖片問答
-- 用戶數：4-8 人同時使用
+> 核心差異：128GB 的緩衝空間可容納更大的 KV Cache，因此能同時服務更多用戶。
+> 模型與功能完全相同，客戶可從 64GB 無痛升級到 128GB。
 
 ---
 

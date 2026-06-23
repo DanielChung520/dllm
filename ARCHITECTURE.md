@@ -13,6 +13,61 @@
 4. **零停機擴展**：從單機邊緣設備到 K8s 叢集，API 與管理介面不變
 5. **資料不離境**：本地推理為預設，雲端連接需明確授權與規則
 
+## 一之一、硬體限制與實際配置（以 DGX Spark 128GB 為基準）
+
+> ⚠️ **重要**：本專案以 **128GB DGX Spark（GB-10）為首要目標硬體**，所有預設配置必須在此硬體上可運行。
+
+### 128GB 記憶體分配實際計算
+
+```
+總計: 128GB 統一記憶體
+├── 系統保留 (Linux, Docker): ~12GB
+├── Rust 控制層: ~0.5GB
+├── 向量資料庫 (Qdrant): ~2-4GB
+├── 結構化資料庫 (PostgreSQL): ~1GB
+├── 快取 (Redis): ~0.5GB
+├── RAG 服務 (Embedding): ~4-8GB
+├── Agent 服務: ~1-2GB
+└── 可用於 LLM 推理: ~100-105GB
+```
+
+### 各硬體平台的模型上限
+
+| 硬體 | 記憶體 | 可同時載入 | 主力模型建議 |
+|------|--------|-----------|-------------|
+| **DGX Spark** | 128GB | 1x 70B INT4 或 2x 30B INT4 | Qwen3-30B/70B |
+| **Mac Studio** (M2 Ultra) | 192GB | 1x 122B + 1x 30B | Qwen3.5-122B |
+| **RTX 5090** | 32GB VRAM | 1x 13B INT4 + CPU offloading | Qwen3-8B/13B |
+| **H100** (單卡) | 80GB VRAM | 1x 70B（需 CPU offloading） | Qwen3-70B |
+| **H100** (雙卡) | 160GB VRAM | 1x 122B | Qwen3.5-122B |
+
+### GB-10 關鍵配置限制
+
+| 設定項 | 預設值 | 限制原因 |
+|--------|--------|---------|
+| `gpu-memory-utilization` | 0.70 | 保留空間給系統與其他服務 |
+| `max-model-len` | 32768 | 65536 會吃掉過多 KV cache |
+| `max-num-seqs` | 8 | 降低並發以節省記憶體 |
+| `max-concurrent-requests` | 8 | Engine Pool 並發上限 |
+| `memory_guard` | safe | 保留較多系統記憶體 |
+| Docker `mem_limit` (vLLM) | 96GB | 防止單一容器拖垮系統 |
+
+### 不建議在 128GB 上執行的操作
+
+- ❌ 同時載入 2 個 70B 模型
+- ❌ 122B 模型 + 完整 RAG + Agent 同時運行
+- ❌ `max-model-len=65536` 搭配高並發
+- ❌ Engine Pool 自動載入多個大模型（需手動管理）
+
+### 建議的產品定位
+
+**128GB GB-10 = 「1 個主力模型 + 知識庫」的輕量企業 AI Box**
+
+- 主力：30-70B INT4 模型（Qwen3/Llama3）
+- 輔助：BGE-M3 Embedding（RAG 使用）
+- 功能：文件上傳、知識庫問答、基礎資料庫查詢
+- 用戶數：4-8 人同時使用
+
 ---
 
 ## 二、系統架構圖

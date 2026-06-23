@@ -78,7 +78,7 @@ impl Default for EnginePoolConfig {
             default_model: None,
             memory_guard: MemoryGuardMode::Balanced,
             ttl_seconds: Some(3600),
-            max_concurrent_requests: 16,
+            max_concurrent_requests: 8,
             preload_on_startup: false,
         }
     }

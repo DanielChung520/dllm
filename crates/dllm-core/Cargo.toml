@@ -45,6 +45,9 @@ uuid = { workspace = true }
 once_cell = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
+walkdir = { workspace = true }
+dirs = { workspace = true }
+rand = { workspace = true }
 
 # Async utilities
 futures = { workspace = true }

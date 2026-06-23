@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use dllm_shared::{
@@ -18,7 +19,7 @@ use crate::mlx_process::MLXProcess;
 pub struct MLXProcessEngine {
     engine_id: String,
     model_info: ModelInfo,
-    process: MLXProcess,
+    process: Mutex<MLXProcess>,
 }
 
 impl MLXProcessEngine {
@@ -30,7 +31,7 @@ impl MLXProcessEngine {
         Ok(Self {
             engine_id,
             model_info,
-            process,
+            process: Mutex::new(process),
         })
     }
 }
@@ -77,7 +78,8 @@ impl InferenceEngine for MLXProcessEngine {
     }
 
     async fn health(&self) -> HealthStatus {
-        match self.process.is_alive().await {
+        let process = self.process.lock().await;
+        match process.is_alive() {
             true => HealthStatus::healthy(),
             false => HealthStatus::unhealthy("MLX 進程已終止"),
         }
@@ -90,7 +92,7 @@ impl InferenceEngine for MLXProcessEngine {
 
     async fn unload(&self) -> Result<(), EngineError> {
         info!("卸載 MLX 引擎: {}", self.engine_id);
-        // TODO: 實現 MLX 進程停止
-        Ok(())
+        let mut process = self.process.lock().await;
+        process.stop().await
     }
 }

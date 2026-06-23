@@ -23,8 +23,8 @@ use crate::model_discovery::ModelDiscovery;
 /// 引擎池 — 多模型 LRU 管理
 pub struct EnginePool {
     config: EnginePoolConfig,
-    /// 已載入的引擎
-    engines: DashMap<String, Box<dyn InferenceEngine>>,
+    /// 已載入的引擎（Arc 共享引用，支援安全取得）
+    engines: DashMap<String, Arc<dyn InferenceEngine>>,
     /// 模型狀態
     statuses: DashMap<String, ModelStatus>,
     /// LRU 順序（最近使用在後方）
@@ -149,8 +149,8 @@ impl EnginePool {
         // 建立引擎
         let engine = self.create_engine(&model_id, &model_info).await?;
         
-        // 註冊引擎
-        self.engines.insert(model_id.clone(), engine);
+        // 註冊引擎（以 Arc 包裝）
+        self.engines.insert(model_id.clone(), Arc::from(engine));
         self.memory_enforcer.register_engine(model_id.clone(), required_mb);
         
         // 更新 LRU
@@ -211,10 +211,10 @@ impl EnginePool {
         Ok(())
     }
 
-    /// 取得引擎（自動載入）
-    pub async fn get_engine(&self, model_id: &str) -> Result<Box<dyn InferenceEngine>, EngineError> {
+    /// 取得引擎（自動載入，返回 Arc 共享引用）
+    pub async fn get_engine(&self, model_id: &str) -> Result<Arc<dyn InferenceEngine>, EngineError> {
         // 檢查是否已載入
-        if let Some(engine) = self.engines.get(model_id) {
+        if let Some(entry) = self.engines.get(model_id) {
             // 更新 LRU
             {
                 let mut lru = self.lru.write();
@@ -228,9 +228,7 @@ impl EnginePool {
                 status.request_count += 1;
             }
 
-            // TODO: 這裡需要解決 DashMap 引用生命週期問題
-            // 暫時返回複製或 Arc
-            return Err(EngineError::Internal { reason: "引擎引用未實現".to_string() });
+            return Ok(entry.value().clone());
         }
 
         // 自動載入
@@ -239,15 +237,8 @@ impl EnginePool {
         // 重新取得
         self.engines
             .get(model_id)
-            .map(|e| {
-                // TODO: 複製引擎或改為 Arc
-                Err::<Box<dyn InferenceEngine>, EngineError>(
-                    EngineError::Internal { reason: "引擎複製未實現".to_string() }
-                )
-            })
-            .unwrap_or_else(|| {
-                Err(EngineError::ModelNotFound { model_id: model_id.to_string() })
-            })
+            .map(|e| e.value().clone())
+            .ok_or_else(|| EngineError::ModelNotFound { model_id: model_id.to_string() })
     }
 
     /// 固定模型
@@ -311,11 +302,11 @@ impl EnginePool {
     async fn create_engine(
         &self,
         model_id: &str,
-        model_info: &ModelInfo,
-    ) -> Result<Box<dyn InferenceEngine>, EngineError> {
+        _model_info: &ModelInfo,
+    ) -> Result<Arc<dyn InferenceEngine>, EngineError> {
         // 尋找支援的工廠
         for factory in &self.factories {
-            // TODO: 實現工廠匹配邏輯
+            // TODO: 實現工廠匹配邏輯（依模型格式自動選擇）
         }
 
         Err(EngineError::EngineStartFailed {

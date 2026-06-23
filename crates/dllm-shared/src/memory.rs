@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// 記憶體守衛模式
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum MemoryGuardMode {
     /// 保守模式：保留較多系統記憶體
     Safe,
@@ -39,7 +39,7 @@ impl MemoryGuardMode {
 }
 
 /// 記憶體快照
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MemorySnapshot {
     pub total_mb: usize,
     pub used_mb: usize,

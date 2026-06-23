@@ -25,11 +25,20 @@ serde_json = { workspace = true }
 # Errors
 thiserror = { workspace = true }
 
+# Async
+async-trait = { workspace = true }
+
+# Futures
+futures = { workspace = true }
+
 # Logging
 tracing = { workspace = true }
 
 # Utilities
 uuid = { workspace = true }
+walkdir = { workspace = true }
+rand = { workspace = true }
+chrono = { workspace = true }
 
 # NVIDIA NVML (optional)
 nvml-wrapper = { version = "0.10", optional = true }

@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use dllm_shared::{
@@ -19,7 +20,7 @@ use crate::vllm_process::VLLMProcess;
 pub struct VLLMProcessEngine {
     engine_id: String,
     model_info: ModelInfo,
-    process: VLLMProcess,
+    process: Mutex<VLLMProcess>,
     client: VLLMClient,
 }
 
@@ -29,12 +30,13 @@ impl VLLMProcessEngine {
         model_info: ModelInfo,
         process: VLLMProcess,
     ) -> Result<Self, EngineError> {
-        let client = VLLMClient::new(process.base_url());
+        let base_url = process.base_url();
+        let client = VLLMClient::new(base_url);
         
         Ok(Self {
             engine_id,
             model_info,
-            process,
+            process: Mutex::new(process),
             client,
         })
     }
@@ -70,13 +72,13 @@ impl InferenceEngine for VLLMProcessEngine {
     }
 
     async fn memory_usage(&self) -> MemorySnapshot {
-        // TODO: 透過 NVML 查詢實際 VRAM 使用
         MemorySnapshot::default()
     }
 
     async fn unload(&self) -> Result<(), EngineError> {
         info!("卸載 vLLM 引擎: {}", self.engine_id);
-        self.process.stop().await?;
+        let mut process = self.process.lock().await;
+        process.stop().await?;
         Ok(())
     }
 }

@@ -70,8 +70,7 @@ impl MLXProcess {
     }
 
     /// 檢查進程是否存活
-    pub async fn is_alive(&self) -> bool {
-        // 嘗試取得進程 ID，若失敗則進程已終止
+    pub fn is_alive(&self) -> bool {
         self.child.id().is_some()
     }
 

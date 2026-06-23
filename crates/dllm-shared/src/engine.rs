@@ -133,7 +133,7 @@ impl std::fmt::Display for Platform {
     }
 }
 
-/// 偵測當前平台
+/// 偵測當前平台（執行時期，非編譯期）
 pub fn detect_platform() -> Platform {
     #[cfg(target_os = "macos")]
     {
@@ -147,27 +147,15 @@ pub fn detect_platform() -> Platform {
         }
     }
     
-    #[cfg(all(target_os = "linux", feature = "nvidia"))]
+    // 嘗試執行 nvidia-smi 檢查是否有 NVIDIA GPU
+    if std::process::Command::new("nvidia-smi")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
     {
-        // 檢查是否存在 nvidia-smi
-        if std::process::Command::new("nvidia-smi")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-        {
-            return Platform::NvidiaLinux;
-        }
-    }
-    
-    #[cfg(target_os = "windows")]
-    {
-        if std::process::Command::new("nvidia-smi")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-        {
-            return Platform::NvidiaWindows;
-        }
+        return Platform::NvidiaLinux;
     }
     
     Platform::CpuOnly

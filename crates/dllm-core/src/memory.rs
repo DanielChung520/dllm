@@ -55,25 +55,8 @@ impl DefaultMemoryEnforcer {
 #[async_trait::async_trait]
 impl MemoryEnforcer for DefaultMemoryEnforcer {
     async fn start_monitoring(&self) {
-        let enforcer = Arc::new(self);
-        let enforcer_clone = enforcer.clone();
-        
-        tokio::spawn(async move {
-            let mut ticker = interval(Duration::from_secs(30));
-            
-            loop {
-                ticker.tick().await;
-                enforcer_clone.update_system_memory();
-                
-                let snapshot = enforcer_clone.snapshot();
-                info!(
-                    "記憶體監控: 總 {}MB, 可用 {}MB, 引擎使用 {}MB",
-                    snapshot.total_mb,
-                    snapshot.available_mb,
-                    snapshot.engine_total_mb()
-                );
-            }
-        });
+        // EnginePool 已啟動監控，此處為空實現
+        info!("記憶體監控已由 EnginePool 管理");
     }
 
     async fn stop_monitoring(&self) {

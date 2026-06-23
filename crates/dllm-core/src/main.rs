@@ -4,7 +4,6 @@ use tracing::{info, warn};
 mod api;
 mod config;
 mod engine_pool;
-mod error;
 mod memory;
 mod middleware;
 mod model_discovery;

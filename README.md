@@ -1,10 +1,10 @@
 # dllm
 
-> 跨平台統一 LLM 執行環境 —— 中小企業 AI Box 的核心引擎
+> NTD 10,000/月，免費借用 Mac Mini 64GB——中小企業的本地 AI Box
 
 ## 專案概述
 
-**dllm**（Distributed Local LLM Manager）是一套專為中小企業設計的本地化 AI 執行環境。它讓企業能在自有設備上運行大型語言模型，處理本地知識庫與資料庫，同時保持與 OpenAI 完全相容的 API 格式。
+**dllm**（Distributed Local LLM Manager）是一套專為中小企業設計的本地化 AI 執行環境。軟體租用（NTD 10,000/月）包含一台預裝好的設備，客戶插電即可使用本地 LLM、知識庫與資料庫 Agent，同時保持與 OpenAI 完全相容的 API 格式。
 
 ## 核心特性
 

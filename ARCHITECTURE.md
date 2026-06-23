@@ -903,7 +903,134 @@ dllm_rag_latency_seconds_bucket{le="0.5"} 480
 
 ---
 
-## 十一、未來擴展
+## 十一、商業模式驅動的架構設計
+
+> 本專案採用「軟體租用 + 硬體借用」模式（NTD 10,000/月）。以下架構設計直接對應此商業模式。
+
+### 11.1 License 驗證系統
+
+```
+客戶設備
+    │
+    ├── dllm-core 啟動時
+    │       │
+    │       ├── 讀取本地 License 檔案（/etc/dllm/license.key）
+    │       ├── 檢查過期時間（離線驗證，RSA 簽章）
+    │       ├── 選擇性線上驗證（非必備，支援離線運行）
+    │       │
+    │       ├── ✅ 有效 → 正常啟動
+    │       └── ❌ 過期 → 進入降級模式（僅 API 查詢，推理引擎不載入）
+    │
+    └── 每月續約時：
+            └── 你上傳新的 License 簽章檔到客戶設備
+                    ├── 透過你的 Admin Portal（客戶可自行貼上）
+                    └── 或透過遠端管理 agent 自動更新
+```
+
+**離線優先設計**：客戶設備可能無網際網路連線，License 驗證必須支援完全離線。
+
+### 11.2 硬體自動偵測
+
+```rust
+/// 自動識別設備類型，無需手動配置
+pub fn detect_hardware() -> HardwareSku {
+    match (platform::current(), total_memory_gb()) {
+        // Mac Mini M4 Pro 64GB → 標準方案
+        (Platform::MacAppleSilicon, 64..=128) => HardwareSku::MacMini64,
+        // DGX Spark / ASUS / 銘凡 128GB → 升級方案
+        (Platform::NvidiaLinux, 128..=192) => HardwareSku::DGXSpark128,
+        // 未知硬體 → 降級模式
+        _ => HardwareSku::Unknown,
+    }
+}
+
+/// 串流自動切換配置
+pub fn apply_hardware_profile(sku: HardwareSku) {
+    match sku {
+        HardwareSku::MacMini64 => {
+            memory_guard = MemoryGuardMode::Safe;
+            max_concurrent_requests = 4;
+            // MLX 引擎
+        }
+        HardwareSku::DGXSpark128 => {
+            memory_guard = MemoryGuardMode::Balanced;
+            max_concurrent_requests = 8;
+            // vLLM 引擎
+        }
+        HardwareSku::Unknown => {
+            panic!("不支援的硬體平台");
+        }
+    }
+}
+```
+
+### 11.3 OTA 自動更新
+
+```
+你的發布伺服器
+    │
+    ├── 推送更新通知（dllm-core 定時輪詢）
+    │       │
+    │       ├── 下載更新套件（差分更新，減少頻寬）
+    │       ├── 驗證簽章（防止篡改）
+    │       ├── 啟動備份容器
+    │       ├── 切流（藍綠部署）
+    │       └── 失敗自動回退
+    │
+    └── 你可以在 Admin Portal 查看：
+            ├── 當前版本
+            ├── 最後更新時間
+            └── 回退歷史
+```
+
+### 11.4 硬體回收與重新部署流程
+
+```
+客戶退租
+    │
+    ├── 你收到設備
+    │       │
+    │       ├── 執行 secure_wipe.sh（清除客戶資料與知識庫）
+    │       ├── 重建韌體到出廠狀態
+    │       ├── 寫入新 License 金鑰
+    │       └── 出貨給下一客戶
+    │
+    └── 技術上支援：
+            ├── 一鍵恢復出廠設定（deploy/oem/factory-reset.sh）
+            ├── 客戶資料加密儲存，清除後無法復原
+            └── License 與設備綁定，確保前客戶無法繼續使用
+```
+
+### 11.5 遠端管理系統（你的後台）
+
+```
+你的管理後台（獨立系統）
+    ├── 設備管理
+    │   ├── 設備清單（硬體型號、版本、記憶體、儲存）
+    │   ├── 在線狀態（心跳，30 秒一次）
+    │   ├── 模型載入狀態（當前已載入模型、記憶體使用）
+    │   └── 客戶資訊（租約期限、聯絡人）
+    │
+    ├── License 管理
+    │   ├── 發放新 License
+    │   ├── 延長/取消訂閱
+    │   └── 歷史記錄
+    │
+    ├── 更新管理
+    │   ├── 推送更新（個別/批次）
+    │   ├── 回退版本
+    │   └── 更新歷史
+    │
+    └── 監控與警報
+        ├── 設備離線通知
+        ├── 磁碟空間不足通知
+        ├── 異常重啟通知
+        └── 使用量統計（月活躍用戶、請求數）
+```
+
+---
+
+## 十二、未來擴展
 
 ### 11.1 純 Rust 引擎替代（長期）
 

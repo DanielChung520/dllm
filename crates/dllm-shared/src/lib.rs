@@ -5,6 +5,7 @@
 
 pub mod engine;
 pub mod error;
+pub mod license;
 pub mod memory;
 pub mod model;
 pub mod types;

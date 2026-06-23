@@ -1,20 +1,30 @@
 //! 模型發現
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use parking_lot::RwLock;
 use tracing::{info, warn};
 
 use dllm_shared::model::{ModelDiscoveryResult, ModelType};
 
 pub struct ModelDiscovery {
     model_dirs: Vec<PathBuf>,
+    /// 掃描結果快取（model_id → ModelDiscoveryResult）
+    cache: RwLock<HashMap<String, ModelDiscoveryResult>>,
 }
 
 impl ModelDiscovery {
     pub fn new(model_dirs: &[PathBuf]) -> Self {
         Self {
             model_dirs: model_dirs.to_vec(),
+            cache: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// 依 model_id 查找對應的模型路徑
+    pub fn find_model_path(&self, model_id: &str) -> Option<PathBuf> {
+        self.cache.read().get(model_id).map(|r| r.model_path.clone())
     }
 
     /// 掃描所有模型目錄
@@ -29,9 +39,24 @@ impl ModelDiscovery {
             }
 
             info!("掃描模型目錄: {:?}", expanded);
-            let entries = tokio::fs::read_dir(&expanded).await?;
-            
-            // TODO: 實現非同步目錄讀取
+            let mut read_dir = tokio::fs::read_dir(&expanded).await?;
+            while let Some(entry) = read_dir.next_entry().await? {
+                let path = entry.path();
+                if path.is_dir() && path.join("config.json").exists() {
+                    if let Ok(Some(result)) = self.scan_model_dir(&path).await {
+                        results.push(result);
+                    }
+                }
+            }
+        }
+
+        // 更新快取
+        {
+            let mut cache = self.cache.write();
+            cache.clear();
+            for r in &results {
+                cache.insert(r.model_id.clone(), r.clone());
+            }
         }
 
         Ok(results)

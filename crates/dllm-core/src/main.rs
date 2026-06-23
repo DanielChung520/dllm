@@ -72,7 +72,6 @@ async fn main() -> anyhow::Result<()> {
             memory_guard,
             log_level,
         } => {
-            // 初始化日誌
             tracing_subscriber::fmt()
                 .with_env_filter(
                     tracing_subscriber::EnvFilter::try_from_default_env()
@@ -80,24 +79,47 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .init();
 
+            let hw_sku = dllm_shared::detect_hardware_sku();
             info!("dllm v{} 啟動中", env!("CARGO_PKG_VERSION"));
-            info!("平台: {}", dllm_shared::detect_platform());
+            info!("硬體: {} (SKU: {:?})", hw_sku.label(), hw_sku);
             info!("端口: {}", port);
-            info!("模型目錄: {}", model_dir);
-            info!("記憶體守衛: {}", memory_guard);
 
-            let config = if let Some(config_path) = config {
+            // License 驗證
+            let license_path = std::env::var("DLLM_LICENSE_PATH")
+                .unwrap_or_else(|_| "/etc/dllm/license.json".to_string());
+            match dllm_shared::license::License::from_file(&license_path) {
+                Ok(license) => {
+                    let status = license.verify("PUBLIC_KEY_PLACEHOLDER");
+                    match &status {
+                        dllm_shared::license::LicenseStatus::Valid => {
+                            info!("✅ License 有效");
+                        }
+                        dllm_shared::license::LicenseStatus::ExpiringSoon { days_left } => {
+                            info!("⚠️ License 將於 {days_left} 天後到期");
+                        }
+                        _ => {
+                            warn!("❌ License 驗證失敗: {}，進入降級模式", status);
+                            info!("降級模式：僅允許 API 查詢，模型推理已停用");
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("❌ License 檔案不存在 ({}): {}，進入降級模式", license_path, e);
+                    info!("降級模式：僅允許 API 查詢，模型推理已停用");
+                }
+            }
+
+            let app_config = if let Some(config_path) = config {
                 AppConfig::from_file(&config_path)?
             } else {
                 AppConfig::default()
             };
 
-            let app = api::create_app(config).await?;
+            let app = api::create_app(app_config).await?;
             let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
             
             info!("🚀 API 伺服器已就緒: http://0.0.0.0:{}", port);
             info!("   健康檢查: http://0.0.0.0:{}/health", port);
-            info!("   API 文件: http://0.0.0.0:{}/docs", port);
 
             axum::serve(listener, app).await?;
         }

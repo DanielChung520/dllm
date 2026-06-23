@@ -298,19 +298,53 @@ impl EnginePool {
         Ok(())
     }
 
-    /// 建立引擎
+    /// 建立引擎 — 依模型路徑自動選擇工廠
     async fn create_engine(
         &self,
         model_id: &str,
-        _model_info: &ModelInfo,
+        model_info: &ModelInfo,
     ) -> Result<Arc<dyn InferenceEngine>, EngineError> {
-        // 尋找支援的工廠
+        // 從 model_discovery 找到模型路徑
+        let model_path = self.discovery.find_model_path(model_id).ok_or_else(|| {
+            EngineError::ModelNotFound { model_id: model_id.to_string() }
+        })?;
+
+        let model_config = dllm_shared::engine::ModelConfig {
+            model_type: model_info.model_type.to_string(),
+            model_id: model_id.to_string(),
+            context_length: Some(4096),
+            quantization: model_info.quantization.clone(),
+            tensor_parallel_size: Some(1),
+            gpu_memory_utilization: None,
+            extra_args: std::collections::HashMap::new(),
+        };
+
+        let engine_config = EngineConfig {
+            model_config,
+            port: None,
+            timeout_seconds: 300,
+            max_concurrent_requests: self.config.max_concurrent_requests,
+            health_check_interval_seconds: 30,
+        };
+
+        // 嘗試每個工廠
         for factory in &self.factories {
-            // TODO: 實現工廠匹配邏輯（依模型格式自動選擇）
+            if factory.supports(&model_path, &engine_config.model_config) {
+                let engine = factory.create(
+                    model_id.to_string(),
+                    model_path.clone(),
+                    engine_config,
+                ).await.map_err(|e| {
+                    EngineError::EngineStartFailed {
+                        reason: format!("工廠 {} 建立失敗: {}", model_id, e),
+                    }
+                })?;
+                return Ok(Arc::from(engine));
+            }
         }
 
         Err(EngineError::EngineStartFailed {
-            reason: format!("無可用工廠載入模型 {}", model_id),
+            reason: format!("無可用工廠載入模型 {}，支援的引擎: vLLM (NVIDIA) / MLX (Mac)", model_id),
         })
     }
 

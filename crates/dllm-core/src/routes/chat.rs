@@ -2,12 +2,9 @@
 
 use axum::{
     extract::Extension,
-    response::{sse::Event, Sse},
-    Json,
+    response::Json,
 };
-use futures::stream::Stream;
 use std::sync::Arc;
-use std::convert::Infallible;
 
 use dllm_shared::types::ChatRequest;
 
@@ -17,42 +14,63 @@ use crate::engine_pool::EnginePool;
 pub async fn chat_completions(
     Extension(pool): Extension<Arc<EnginePool>>,
     Json(request): Json<ChatRequest>,
-) -> Result<Json<serde_json::Value>, Json<serde_json::Value>> {
+) -> Json<serde_json::Value> {
     let is_stream = request.stream.unwrap_or(false);
     
     if is_stream {
-        // TODO: 實現 SSE 串流
-        return Err(Json(serde_json::json!({
+        return Json(serde_json::json!({
             "error": {
                 "message": "串流模式尚未實現",
                 "type": "not_implemented",
                 "code": "stream_not_implemented"
             }
-        })));
+        }));
     }
 
-    // TODO: 取得引擎並執行生成
-    let response = serde_json::json!({
-        "id": format!("chatcmpl-{}", uuid::Uuid::new_v4()),
-        "object": "chat.completion",
-        "created": chrono::Utc::now().timestamp(),
-        "model": request.model,
-        "choices": [
-            {
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "（此為預設回應，實際推理引擎尚未連接）"
-                },
-                "finish_reason": "stop"
-            }
-        ],
-        "usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0
-        }
-    });
+    // 開發模式：直接代理到本地 vLLM（當 EnginePool 尚未就緒時）
+    if let Ok(vllm_url) = std::env::var("VLLM_DIRECT_URL") {
+        return proxy_to_vllm(&vllm_url, request).await;
+    }
 
-    Ok(Json(response))
+    match pool.get_engine(&request.model).await {
+        Ok(engine) => {
+            match engine.generate(request).await {
+                Ok(response) => Json(serde_json::to_value(&response).unwrap_or_default()),
+                Err(e) => Json(serde_json::json!({
+                    "error": {
+                        "message": e.to_string(),
+                        "type": "engine_error",
+                        "code": "generation_failed"
+                    }
+                })),
+            }
+        }
+        Err(e) => Json(serde_json::json!({
+            "error": {
+                "message": e.to_string(),
+                "type": "engine_error",
+                "code": "engine_not_found"
+            }
+        })),
+    }
+}
+
+/// 直接代理請求到本地 vLLM（開發模式）
+async fn proxy_to_vllm(vllm_url: &str, request: ChatRequest) -> Json<serde_json::Value> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/v1/chat/completions", vllm_url);
+    
+    match client.post(&url).json(&request).send().await {
+        Ok(response) => {
+            match response.json::<serde_json::Value>().await {
+                Ok(value) => Json(value),
+                Err(e) => Json(serde_json::json!({
+                    "error": {"message": format!("vLLM 回應解析失敗: {}", e), "type": "proxy_error", "code": "parse_failed"}
+                })),
+            }
+        }
+        Err(e) => Json(serde_json::json!({
+            "error": {"message": format!("vLLM 連線失敗: {}", e), "type": "proxy_error", "code": "connection_failed"}
+        })),
+    }
 }

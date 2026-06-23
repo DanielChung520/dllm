@@ -1,0 +1,32 @@
+[package]
+name = "dllm-mac"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "dllm Mac 後端適配 — MLX 引擎管理與 Metal 記憶體監控"
+
+[dependencies]
+# Internal
+dllm-shared = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+
+[dev-dependencies]
+mockall = { workspace = true }

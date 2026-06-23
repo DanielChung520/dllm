@@ -1,0 +1,68 @@
+[package]
+name = "dllm-core"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "dllm 核心控制層 — API Gateway、Engine Pool、模型管理"
+
+[[bin]]
+name = "dllm"
+path = "src/main.rs"
+
+[dependencies]
+# Internal
+dllm-shared = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+
+# HTTP / Web
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+hyper = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging / Tracing
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Utilities
+chrono = { workspace = true }
+uuid = { workspace = true }
+once_cell = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+
+# Async utilities
+futures = { workspace = true }
+futures-util = { workspace = true }
+async-trait = { workspace = true }
+
+# CLI
+clap = { workspace = true }
+
+# Platform adapters (optional)
+dllm-nvidia = { workspace = true, optional = true }
+dllm-mac = { workspace = true, optional = true }
+
+[features]
+default = []
+nvidia = ["dep:dllm-nvidia"]
+mac = ["dep:dllm-mac"]
+
+[dev-dependencies]
+mockall = { workspace = true }
+tempfile = { workspace = true }

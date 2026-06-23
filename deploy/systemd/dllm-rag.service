@@ -1,0 +1,25 @@
+[Unit]
+Description=dllm RAG Service
+After=dllm-core.service qdrant.service
+Requires=dllm-core.service
+
+[Service]
+Type=simple
+User=dllm
+Group=dllm
+WorkingDirectory=/opt/dllm/services/dllm-rag
+
+Environment="QDRANT_URL=http://localhost:6333"
+Environment="EMBEDDING_MODEL=BAAI/bge-m3"
+
+ExecStart=/opt/dllm/services/dllm-rag/venv/bin/python -m uvicorn src.main:app --host 0.0.0.0 --port 8001
+
+Restart=always
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dllm-rag
+
+[Install]
+WantedBy=multi-user.target

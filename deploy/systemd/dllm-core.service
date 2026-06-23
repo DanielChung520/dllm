@@ -1,0 +1,38 @@
+[Unit]
+Description=dllm AI Box Core Service
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=dllm
+Group=dllm
+WorkingDirectory=/opt/dllm
+
+# 環境變數
+Environment="DLLM_CONFIG_PATH=/opt/dllm/config/settings.toml"
+Environment="DLLM_MODEL_DIR=/opt/dllm/models"
+Environment="RUST_LOG=info"
+Environment="DLLM_PORT=11400"
+
+# 啟動命令
+ExecStart=/usr/local/bin/dllm serve \
+    --port ${DLLM_PORT} \
+    --model-dir ${DLLM_MODEL_DIR} \
+    --config ${DLLM_CONFIG_PATH}
+
+# 重啟策略
+Restart=always
+RestartSec=10
+
+# 資源限制
+MemoryMax=120G
+CPUQuota=800%
+
+# 日誌
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dllm-core
+
+[Install]
+WantedBy=multi-user.target

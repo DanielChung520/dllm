@@ -1,0 +1,49 @@
+[package]
+name = "dllm-connector"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "dllm 雲端連接器 — 混合雲 LLM 路由與計費追蹤"
+
+[[bin]]
+name = "dllm-connector"
+path = "src/main.rs"
+
+[dependencies]
+# Internal
+dllm-shared = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# HTTP client
+reqwest = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Utilities
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+# Redis (optional)
+redis = { version = "0.27", features = ["tokio-comp"], optional = true }
+
+[features]
+default = ["redis"]
+redis = ["dep:redis"]
+
+[dev-dependencies]
+mockall = { workspace = true }

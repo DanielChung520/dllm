@@ -1,0 +1,58 @@
+FROM rust:1.80-slim AS builder
+
+WORKDIR /app
+
+# 安裝系統依賴
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# 複製 Cargo 配置
+COPY Cargo.toml Cargo.lock ./
+COPY crates/dllm-shared/Cargo.toml crates/dllm-shared/
+COPY crates/dllm-core/Cargo.toml crates/dllm-core/
+COPY crates/dllm-nvidia/Cargo.toml crates/dllm-nvidia/
+COPY crates/dllm-mac/Cargo.toml crates/dllm-mac/
+
+# 建立虛擬原始碼以快取依賴
+RUN mkdir -p crates/dllm-shared/src crates/dllm-core/src \
+    crates/dllm-nvidia/src crates/dllm-mac/src && \
+    echo "fn main() {}" > crates/dllm-core/src/main.rs && \
+    echo "" > crates/dllm-shared/src/lib.rs && \
+    echo "" > crates/dllm-nvidia/src/lib.rs && \
+    echo "" > crates/dllm-mac/src/lib.rs
+
+# 編譯依賴
+RUN cargo build --release -p dllm-core --features nvidia 2>/dev/null || true
+
+# 複製實際原始碼
+COPY . .
+
+# 重新編譯（利用快取）
+RUN cargo build --release -p dllm-core --features nvidia
+
+# 執行階段
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 複製編譯結果
+COPY --from=builder /app/target/release/dllm /usr/local/bin/dllm
+
+# 建立目錄
+RUN mkdir -p /models /config /logs
+
+# 健康檢查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:11400/health || exit 1
+
+EXPOSE 11400
+
+ENTRYPOINT ["dllm"]
+CMD ["serve", "--port", "11400", "--model-dir", "/models"]

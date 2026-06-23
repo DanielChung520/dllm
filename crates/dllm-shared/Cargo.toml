@@ -1,0 +1,38 @@
+[package]
+name = "dllm-shared"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "dllm 共享類型、trait 與工具函式"
+
+[dependencies]
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+
+# Async
+async-trait = { workspace = true }
+tokio = { workspace = true }
+
+# Utilities
+chrono = { workspace = true }
+uuid = { workspace = true }
+regex = { workspace = true }
+once_cell = { workspace = true }
+
+# Futures
+futures = { workspace = true }
+futures-util = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+[dev-dependencies]
+mockall = { workspace = true }
+tempfile = { workspace = true }

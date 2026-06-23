@@ -1,0 +1,897 @@
+# dllm 架構規格文件
+
+> **版本**：v0.1.0-alpha
+> **定位**：跨平台統一 LLM 執行環構
+
+---
+
+## 一、架構目標
+
+1. **平台抽象**：上層邏輯與底層硬體解耦，同一套 Rust 控制層運行於 Mac / GB-10 / H100
+2. **單一二進位**：`dllm-core` 編譯為單一可執行檔，部署極簡
+3. **插件化推理引擎**：透過 trait 抽象，未來可無縫替換 vLLM / MLX / Atlas
+4. **零停機擴展**：從單機邊緣設備到 K8s 叢集，API 與管理介面不變
+5. **資料不離境**：本地推理為預設，雲端連接需明確授權與規則
+
+---
+
+## 二、系統架構圖
+
+### 2.1 總體架構
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                          外部客戶端                                  │
+│  OpenAI SDK │ Claude Code │ Cursor │ 企業內部系統 │ dllm-admin     │
+└──────────────────────────┬──────────────────────────────────────────┘
+                           │ HTTP / WebSocket
+                           ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                        dllm-core（Rust）                             │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │  API Layer（Axum）                                           │    │
+│  │  ├── OpenAI-compatible 路由（/v1/chat/completions）           │    │
+│  │  ├── Anthropic-compatible 路由（/v1/messages）                │    │
+│  │  ├── RAG 路由（/v1/rag/*）                                    │    │
+│  │  ├── Agent 路由（/v1/agent/*）                                │    │
+│  │  ├── 管理路由（/admin/*、/v1/models、/health）                │    │
+│  │  └── WebSocket（串流、監控）                                   │    │
+│  ├─────────────────────────────────────────────────────────────┤    │
+│  │  Business Logic Layer                                        │    │
+│  │  ├── Request Router（請求分發到 Engine / RAG / Agent）       │    │
+│  │  ├── Engine Pool（多模型 LRU + TTL + Pin）                   │    │
+│  │  ├── Memory Enforcer（記憶體壓力監控與自動卸載）              │    │
+│  │  ├── Model Discovery（啟動時掃描、動態註冊）                  │    │
+│  │  ├── Cloud Connector（混合雲路由與計費）                      │    │
+│  │  └── Auth & Rate Limit（API Key、請求限流）                   │    │
+│  ├─────────────────────────────────────────────────────────────┤    │
+│  │  Engine Interface Layer（Trait 抽象）                         │    │
+│  │  ├── InferenceEngine trait（generate / stream_generate）      │    │
+│  │  ├── EmbeddingEngine trait（embed）                           │    │
+│  │  └── HealthCheck trait（health / metrics）                    │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+├─────────────────────────────────────────────────────────────────────┤
+│                        Platform Adapters                             │
+│  ┌─────────────────────┐              ┌─────────────────────┐       │
+│  │   dllm-nvidia       │              │     dllm-mac        │       │
+│  │   （條件編譯）       │              │   （條件編譯）       │       │
+│  │                     │              │                     │       │
+│  │  VLLMProcessEngine  │              │   MLXProcessEngine  │       │
+│  │  ├── 子進程管理      │              │   ├── MLX Python    │       │
+│  │  ├── gRPC/HTTP 溝通  │              │   │   subprocess    │       │
+│  │  ├── VRAM 監控       │              │   ├── Metal 記憶體  │       │
+│  │  └── CUDA 健康檢查   │              │   └── 統一記憶體    │       │
+│  └─────────────────────┘              └─────────────────────┘       │
+└─────────────────────────────────────────────────────────────────────┘
+                           │ 本地 IPC（gRPC / Unix Socket / HTTP）
+                           ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Service Layer（Docker / 子進程）                 │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐   │
+│  │    dllm-rag      │  │   dllm-agent     │  │ dllm-connector   │   │
+│  │  （Python/Rust）  │  │  （Python/Rust）  │  │    （Rust）       │   │
+│  │                  │  │                  │  │                  │   │
+│  │  文件解析         │  │  工具註冊         │  │  雲端 LLM 連接   │   │
+│  │  Embedding       │  │  MCP client      │  │  請求轉換        │   │
+│  │  向量檢索         │  │  ReAct Loop      │  │  計費追蹤        │   │
+│  │  混合檢索         │  │  工作流引擎       │  │  Fallback 路由   │   │
+│  └──────────────────┘  └──────────────────┘  └──────────────────┘   │
+└─────────────────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Data Layer                                    │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
+│  │   Qdrant     │  │  PostgreSQL  │  │   Local FS   │              │
+│  │  向量資料庫   │  │  + pgvector  │  │  模型/文件   │              │
+│  └──────────────┘  └──────────────┘  └──────────────┘              │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 2.2 Engine Pool 詳細設計
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Engine Pool（單例）                        │
+├─────────────────────────────────────────────────────────────┤
+│  Config                                                     │
+│  ├── model_dirs: Vec<PathBuf>      # 掃描路徑               │
+│  ├── pinned_models: Vec<String>    # 固定不卸載             │
+│  ├── default_model: Option<String> # 預設模型               │
+│  ├── memory_guard: MemoryGuardMode # safe/balanced/aggressive│
+│  └── ttl_seconds: Option<u64>      # 閒置卸載時間            │
+├─────────────────────────────────────────────────────────────┤
+│  State                                                      │
+│  ├── engines: HashMap<String, Box<dyn InferenceEngine>>     │
+│  ├── lru_list: LinkedList<String>  # 最近使用順序            │
+│  ├── pinned: HashSet<String>       # 被固定的模型            │
+│  └── memory_usage: MemorySnapshot  # 當前記憶體使用          │
+├─────────────────────────────────────────────────────────────┤
+│  Operations                                                 │
+│  ├── discover_models()             # 掃描目錄               │
+│  ├── load_model(id)                # 載入模型               │
+│  ├── unload_model(id)              # 卸載模型               │
+│  ├── evict_if_needed()             # LRU 卸載               │
+│  ├── pin_model(id)                 # 固定模型               │
+│  ├── unpin_model(id)               # 解除固定               │
+│  ├── get_engine(id) -> Option      # 取得引擎               │
+│  └── health_check_all()            # 健康檢查               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 2.3 請求生命週期
+
+```
+Client Request
+    │
+    ▼
+┌─────────────────┐
+│  API Router     │ ──▶ 認證（API Key）
+│  (Axum)         │ ──▶ 限流（Rate Limit）
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Request Parser  │ ──▶ 解析 model 欄位
+│                 │ ──▶ 辨識請求類型（Chat / RAG / Agent）
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Router Logic   │ ──▶ RAG 請求？→ 轉發 dllm-rag
+│                 │ ──▶ Agent 請求？→ 轉發 dllm-agent
+│                 │ ──▶ Cloud 路由？→ 轉發 dllm-connector
+│                 │ ──▶ 本地模型？→ Engine Pool
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Engine Pool    │ ──▶ 模型已載入？→ 直接路由
+│                 │ ──▶ 模型未載入？→ load_model() + LRU eviction
+│                 │ ──▶ 記憶體不足？→ 返回 503 + retry-after
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ InferenceEngine │ ──▶ 非同步串流生成（tokio::sync::mpsc）
+│  (trait)        │ ──▶ 支援 cancel（Drop token）
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Response Stream │ ──▶ Server-Sent Events (SSE)
+│ Formatter       │ ──▶ OpenAI-compatible chunk 格式
+└─────────────────┘
+```
+
+---
+
+## 三、核心 Trait 定義
+
+### 3.1 InferenceEngine
+
+```rust
+/// 推理引擎抽象介面
+/// 所有平台後端（vLLM / MLX / Atlas）皆需實現
+#[async_trait]
+pub trait InferenceEngine: Send + Sync {
+    /// 引擎唯一識別碼
+    fn engine_id(&self) -> &str;
+
+    /// 模型資訊
+    fn model_info(&self) -> &ModelInfo;
+
+    /// 同步生成（非串流）
+    async fn generate(&self, request: ChatRequest) -> Result<ChatResponse, EngineError>;
+
+    /// 串流生成
+    async fn stream_generate(
+        &self,
+        request: ChatRequest,
+    ) -> Result<BoxStream<'static, Result<ChatChunk, EngineError>>, EngineError>;
+
+    /// 健康檢查
+    async fn health(&self) -> HealthStatus;
+
+    /// 記憶體用量統計
+    async fn memory_usage(&self) -> MemorySnapshot;
+
+    /// 卸載模型（釋放資源）
+    async fn unload(&self) -> Result<(), EngineError>;
+}
+
+/// 模型基本資訊
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelInfo {
+    pub id: String,
+    pub object: String, // "model"
+    pub created: i64,
+    pub owned_by: String,
+    pub model_type: ModelType, // LLM / VLM / Embedding / Reranker
+    pub max_context_length: usize,
+    pub quantization: Option<String>, // "int4", "int8", "fp16"
+    pub estimated_memory_mb: usize,
+    pub capabilities: Vec<String>, // "chat", "vision", "tools", "json_mode"
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ModelType {
+    Llm,
+    Vlm,
+    Embedding,
+    Reranker,
+    AudioStt,
+    AudioTts,
+}
+```
+
+### 3.2 EngineFactory
+
+```rust
+/// 引擎工廠：根據平台與模型類型建立對應引擎
+pub trait EngineFactory: Send + Sync {
+    /// 是否支援此模型
+    fn supports(&self, model_path: &Path, config: &ModelConfig) -> bool;
+
+    /// 建立引擎實例
+    async fn create(
+        &self,
+        model_id: String,
+        model_path: PathBuf,
+        config: EngineConfig,
+    ) -> Result<Box<dyn InferenceEngine>, EngineError>;
+
+    /// 預估記憶體用量（MB）
+    fn estimate_memory(&self, model_path: &Path, config: &ModelConfig) -> usize;
+}
+
+/// 平台自動偵測
+pub fn detect_platform() -> Platform {
+    #[cfg(target_os = "macos")]
+    {
+        if std::process::Command::new("system_profiler")
+            .args(&["SPHardwareDataType"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("Apple M"))
+            .unwrap_or(false)
+        {
+            return Platform::MacAppleSilicon;
+        }
+    }
+    
+    #[cfg(all(target_os = "linux", feature = "nvidia"))]
+    {
+        if nvml::Nvml::init().is_ok() {
+            return Platform::NvidiaLinux;
+        }
+    }
+    
+    Platform::CpuOnly
+}
+```
+
+### 3.3 Memory Management
+
+```rust
+/// 記憶體守衛模式
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MemoryGuardMode {
+    /// 保守模式：保留較多系統記憶體
+    Safe,
+    /// 平衡模式：預設
+    Balanced,
+    /// 積極模式：允許 AI 使用更多記憶體
+    Aggressive,
+    /// 自訂上限
+    Custom { max_gb: f64 },
+}
+
+/// 記憶體快照
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MemorySnapshot {
+    pub total_mb: usize,
+    pub used_mb: usize,
+    pub available_mb: usize,
+    pub engine_usage_mb: HashMap<String, usize>,
+}
+
+/// 記憶體強制執行器
+#[async_trait]
+pub trait MemoryEnforcer: Send + Sync {
+    /// 啟動背景監控
+    async fn start_monitoring(&self);
+    
+    /// 檢查是否有足夠記憶體載入新模型
+    fn can_load(&self, required_mb: usize) -> bool;
+    
+    /// 建議應卸載的模型（按 LRU）
+    fn suggest_eviction(&self, required_mb: usize) -> Vec<String>;
+    
+    /// 取得當前記憶體狀態
+    fn snapshot(&self) -> MemorySnapshot;
+}
+```
+
+---
+
+## 四、跨平台適配策略
+
+### 4.1 條件編譯配置
+
+```toml
+# Cargo.toml（dllm-core）
+[features]
+default = ["nvidia"]
+
+# 平台互斥
+nvidia = ["dllm-nvidia"]
+mac = ["dllm-mac"]
+
+# 功能選項
+rag = []
+agent = []
+cloud = ["dllm-connector"]
+admin = []
+
+[dependencies]
+dllm-shared = { path = "../dllm-shared" }
+dllm-nvidia = { path = "../dllm-nvidia", optional = true }
+dllm-mac = { path = "../dllm-mac", optional = true }
+dllm-connector = { path = "../../services/dllm-connector", optional = true }
+```
+
+```rust
+// 平台引擎初始化
+cfg_if::cfg_if! {
+    if #[cfg(feature = "nvidia")] {
+        pub use dllm_nvidia::VLLMProcessEngine as DefaultEngine;
+        pub use dllm_nvidia::NvidiaMemoryEnforcer as DefaultEnforcer;
+    } else if #[cfg(feature = "mac")] {
+        pub use dllm_mac::MLXProcessEngine as DefaultEngine;
+        pub use dllm_mac::MacMemoryEnforcer as DefaultEnforcer;
+    } else {
+        pub use dllm_shared::MockEngine as DefaultEngine;
+        pub use dllm_shared::MockEnforcer as DefaultEnforcer;
+    }
+}
+```
+
+### 4.2 NVIDIA 後端（dllm-nvidia）
+
+```
+dllm-nvidia/
+├── Cargo.toml
+└── src/
+    ├── lib.rs              # 公開介面
+    ├── vllm_engine.rs      # VLLMProcessEngine 實現
+    ├── vllm_process.rs     # vLLM 子進程管理（啟動/停止/重啟）
+    ├── vllm_client.rs      # vLLM HTTP/gRPC 客戶端
+    ├── memory/
+    │   ├── mod.rs          # NVIDIA 記憶體管理模組
+    │   ├── nvml_monitor.rs # NVML VRAM 監控
+    │   └── cuda_guard.rs   # CUDA 記憶體保護
+    └── health/
+        ├── mod.rs
+        └── gpu_checker.rs  # GPU 溫度/利用率/驅動檢查
+```
+
+**VLLMProcessEngine 設計**：
+- 每個模型一個 vLLM subprocess（透過 `tokio::process::Command`）
+- 子進程參數：`--model`、`--port`（動態分配）、`--gpu-memory-utilization`、`--max-model-len`
+- 通訊：HTTP REST API（vLLM 原生 OpenAI-compatible）
+- 健康檢查：定時 `GET /health`，失敗則重啟
+- 卸載：`SIGTERM` → 等待 graceful shutdown → `SIGKILL`
+
+### 4.3 Mac 後端（dllm-mac）
+
+```
+dllm-mac/
+├── Cargo.toml
+└── src/
+    ├── lib.rs
+    ├── mlx_engine.rs       # MLXProcessEngine 實現
+    ├── mlx_process.rs      # Python mlx-lm subprocess 管理
+    ├── memory/
+    │   ├── mod.rs
+    │   └── metal_monitor.rs # Metal 記憶體監控
+    └── health/
+        └── mod.rs
+```
+
+**MLXProcessEngine 設計**：
+- 呼叫 Python mlx-lm server subprocess
+- 或使用 PyO3 直接嵌入 Python runtime（效能更好，但編譯複雜）
+- 監控透過 macOS `vm_statistics64` 與 `task_info`
+
+---
+
+## 五、RAG 架構設計
+
+### 5.1 RAG Pipeline
+
+```
+文件上傳
+    │
+    ▼
+┌─────────────────┐
+│  Document       │ ──▶ 格式偵測（PDF / DOCX / XLSX / TXT / MD）
+│  Ingestion      │ ──▶ OCR（若需要）
+│                 │ ──▶ 文本提取 + 版面分析
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Text Splitter  │ ──▶ 語義分塊（Semantic Chunking）
+│                 │ ──▶ 重疊窗口（Overlap）
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Embedding      │ ──▶ BGE-M3 / multilingual-e5
+│  Model          │ ──▶ sparse + dense 雙向量
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Vector Store   │ ──▶ Qdrant 儲存
+│  (Qdrant)       │ ──▶ 集合（Collection）按知識庫區分
+└─────────────────┘
+
+查詢流程：
+用戶 Query
+    │
+    ▼
+┌─────────────────┐
+│  Query          │ ──▶ Query 改寫 / 擴展
+│  Preprocessing  │ ──▶ 意圖分類（是否需檢索）
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Hybrid Search  │ ──▶ Dense Retrieval（向量相似度）
+│                 │ ──▶ Sparse Retrieval（BM25 / SPLADE）
+│                 │ ──▶ Rerank（BGE-Reranker）
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Context        │ ──▶ Top-K 結果拼裝為 prompt
+│  Assembly       │ ──▶ 來源標註（citation）
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  LLM Generation │ ──▶ 帶上下文生成答案
+│  (via Engine)   │ ──▶ 串流返回
+└─────────────────┘
+```
+
+### 5.2 dllm-rag 服務架構
+
+```
+dllm-rag/
+├── src/
+│   ├── main.py              # FastAPI 入口
+│   ├── config.py            # 配置管理
+│   ├── ingestion/
+│   │   ├── __init__.py
+│   │   ├── parser.py        # 文件解析器註冊表
+│   │   ├── pdf_parser.py    # PyMuPDF / marker
+│   │   ├── docx_parser.py   # python-docx
+│   │   └── ocr.py           # surya / easyocr
+│   ├── chunking/
+│   │   ├── __init__.py
+│   │   ├── semantic.py      # 語義分塊
+│   │   └── fixed.py         # 固定長度分塊
+│   ├── embedding/
+│   │   ├── __init__.py
+│   │   ├── model.py         # Embedding 模型封裝
+│   │   └── batch.py         # 批次編碼
+│   ├── retrieval/
+│   │   ├── __init__.py
+│   │   ├── qdrant_client.py # Qdrant 操作封裝
+│   │   ├── hybrid.py        # 混合檢索
+│   │   └── reranker.py      # 重排序
+│   ├── api/
+│   │   ├── __init__.py
+│   │   ├── upload.py        # 文件上傳 API
+│   │   ├── query.py         # 檢索 API
+│   │   └── manage.py        # 知識庫管理 API
+│   └── models.py            # Pydantic 模型定義
+├── models/                  # 本地模型快取
+├── requirements.txt
+├── Dockerfile
+└── README.md
+```
+
+---
+
+## 六、Agent 架構設計
+
+### 6.1 Agent 執行模型
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Agent Runtime                            │
+├─────────────────────────────────────────────────────────────┤
+│  Input                                                      │
+│  ├── User Query                                             │
+│  ├── Conversation History                                   │
+│  └── Available Tools                                        │
+├─────────────────────────────────────────────────────────────┤
+│  ReAct Loop                                                 │
+│  Step 1: Thought  ──▶ LLM 推理「我需要查詢資料庫」            │
+│  Step 2: Action  ──▶ 呼叫工具 db_query("SELECT ...")        │
+│  Step 3: Observation ──▶ 工具返回結果                        │
+│  Step 4: Thought  ──▶ 「根據結果，答案是...」                 │
+│  ... (max 10 iterations)                                    │
+├─────────────────────────────────────────────────────────────┤
+│  Output                                                     │
+│  ├── Final Answer                                           │
+│  ├── Tool Calls History                                     │
+│  └── Token Usage                                            │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 6.2 工具生態
+
+| 工具類型 | 實現 | 用途 |
+|---------|------|------|
+| **Database** | SQLAlchemy + schema introspection | NL2SQL |
+| **File** | 本地檔案系統操作 | 讀寫企業文件 |
+| **Email** | SMTP / IMAP | 發送報告、摘要 |
+| **Web** | httpx + BeautifulSoup | 爬取公開資料 |
+| **Calendar** | CalDAV / Google Calendar API | 排程 |
+| **MCP** | MCP client SDK | 連接外部工具服務 |
+
+### 6.3 MCP 整合
+
+```
+dllm-agent/
+├── src/
+│   ├── main.py
+│   ├── agent/
+│   │   ├── __init__.py
+│   │   ├── react.py         # ReAct loop 實現
+│   │   ├── planner.py       # 任務規劃（複雜任務拆解）
+│   │   └── executor.py      # 工具執行器
+│   ├── tools/
+│   │   ├── __init__.py
+│   │   ├── registry.py      # 工具註冊表
+│   │   ├── builtin/         # 內建工具
+│   │   │   ├── db_tool.py
+│   │   │   ├── file_tool.py
+│   │   │   └── email_tool.py
+│   │   └── mcp/             # MCP 工具
+│   │       ├── client.py    # MCP client
+│   │       └── adapter.py   # MCP → 內部工具格式轉換
+│   ├── api/
+│   │   ├── run.py           # /v1/agent/run
+│   │   └── tools.py         # /v1/agent/tools
+│   └── models.py
+├── requirements.txt
+├── Dockerfile
+└── README.md
+```
+
+---
+
+## 七、雲端連接器設計
+
+### 7.1 混合雲路由邏輯
+
+```rust
+/// 路由決策引擎
+pub struct CloudRouter {
+    /// 本地可用模型
+    local_models: HashSet<String>,
+    /// 雲端供應商配置
+    providers: Vec<CloudProvider>,
+    /// 路由規則
+    rules: Vec<RoutingRule>,
+    /// 用戶預算上限
+    budget_limit: Option<f64>,
+    /// 已用額度
+    budget_used: Arc<AtomicF64>,
+}
+
+impl CloudRouter {
+    /// 決定請求路由
+    pub async fn route(&self, request: &ChatRequest) -> RouteDecision {
+        // 1. 檢查隱私規則
+        if self.is_sensitive(&request.messages) {
+            return RouteDecision::LocalOnly;
+        }
+        
+        // 2. 檢查預算
+        if self.budget_exceeded() {
+            return RouteDecision::LocalOnly;
+        }
+        
+        // 3. 檢查本地模型能力
+        if self.local_capable(request) {
+            return RouteDecision::Local;
+        }
+        
+        // 4. 評估請求複雜度
+        let complexity = self.assess_complexity(request);
+        match complexity {
+            Complexity::Simple => RouteDecision::Local,
+            Complexity::Moderate if self.local_available() => RouteDecision::Local,
+            _ => RouteDecision::Cloud(self.select_provider(request)),
+        }
+    }
+}
+```
+
+### 7.2 支援的雲端供應商
+
+| 供應商 | API 格式 | 特色 |
+|--------|---------|------|
+| **OpenAI** | 原生 | GPT-4o、o1、DALL-E |
+| **Anthropic** | Messages API | Claude 3.5、長上下文 |
+| **Google** | Gemini API | Gemini Pro、多模態 |
+| **通義千問** | OpenAI-compatible | 中文最佳 |
+| **DeepSeek** | OpenAI-compatible | 高性價比 |
+| **Azure OpenAI** | OpenAI-compatible | 企業合規 |
+
+---
+
+## 八、部署架構
+
+### 8.1 開發環境（docker-compose）
+
+```yaml
+# docker-compose.yml
+version: "3.8"
+
+services:
+  dllm-core:
+    build:
+      context: ./crates/dllm-core
+      dockerfile: ../../deploy/docker/Dockerfile.core
+    ports:
+      - "11400:11400"
+    volumes:
+      - ./data/models:/models
+      - ./data/config:/config"
+    environment:
+      - DLLM_CONFIG_PATH=/config/settings.toml
+      - DLLM_MODEL_DIR=/models
+      - RUST_LOG=info
+    depends_on:
+      - qdrant
+      - postgres
+    networks:
+      - dllm-net
+
+  dllm-rag:
+    build:
+      context: ./services/dllm-rag
+      dockerfile: ../../deploy/docker/Dockerfile.rag
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - EMBEDDING_MODEL=BAAI/bge-m3
+    depends_on:
+      - qdrant
+    networks:
+      - dllm-net
+
+  dllm-agent:
+    build:
+      context: ./services/dllm-agent
+      dockerfile: ../../deploy/docker/Dockerfile.agent
+    environment:
+      - DLLM_CORE_URL=http://dllm-core:11400
+    depends_on:
+      - dllm-core
+    networks:
+      - dllm-net
+
+  vllm:
+    image: vllm/vllm-openai:latest
+    runtime: nvidia
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - GPU_MEMORY_UTILIZATION=0.85
+    volumes:
+      - ./data/models:/models
+    # 不暴露對外端口，由 dllm-core 透過內部網路調用
+    networks:
+      - dllm-net
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      - dllm-net
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=dllm
+      - POSTGRES_PASSWORD=dllm
+      - POSTGRES_DB=dllm
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - dllm-net
+
+  admin:
+    build:
+      context: ./admin/dllm-admin
+      dockerfile: ../../deploy/docker/Dockerfile.admin
+    ports:
+      - "11401:80"
+    depends_on:
+      - dllm-core
+    networks:
+      - dllm-net
+
+volumes:
+  qdrant-data:
+  postgres-data:
+
+networks:
+  dllm-net:
+    driver: bridge
+```
+
+### 8.2 生產環境（OEM 預裝）
+
+```bash
+# OEM 首次開機腳本（deploy/oem/first-boot.sh）
+#!/bin/bash
+set -e
+
+echo "=== dllm AI Box 首次設定 ==="
+
+# 1. 硬體檢測
+./scripts/detect-hardware.sh
+
+# 2. 下載預設模型（若網路可用）
+./scripts/download-default-models.sh
+
+# 3. 啟動服務
+systemctl enable dllm-core
+systemctl enable dllm-rag
+systemctl enable dllm-agent
+systemctl enable qdrant
+systemctl start dllm-core
+
+# 4. 等待服務就緒
+sleep 10
+
+# 5. 顯示狀態
+curl -s http://localhost:11400/health | jq .
+
+echo "=== 設定完成 ==="
+echo "管理後台: http://$(hostname -I | awk '{print $1}'):11401"
+echo "API 端點: http://$(hostname -I | awk '{print $1}'):11400/v1"
+```
+
+---
+
+## 九、監控與可觀測性
+
+### 9.1 Metrics（Prometheus 格式）
+
+```
+# /metrics
+# 請求指標
+dllm_requests_total{model="qwen3-30b",status="success"} 1024
+dllm_request_duration_seconds_bucket{model="qwen3-30b",le="1.0"} 950
+dllm_tokens_generated_total{model="qwen3-30b"} 1048576
+
+# 引擎指標
+dllm_engine_loaded{model="qwen3-30b"} 1
+dllm_engine_memory_mb{model="qwen3-30b"} 45056
+dllm_engine_lru_position{model="qwen3-30b"} 1
+
+# 系統指標
+dllm_system_memory_total_mb 131072
+dllm_system_memory_available_mb 65536
+dllm_gpu_memory_total_mb 81920
+dllm_gpu_memory_used_mb 45056
+
+# RAG 指標
+dllm_rag_documents_total{kb="company-docs"} 1500
+dllm_rag_queries_total{kb="company-docs"} 512
+dllm_rag_latency_seconds_bucket{le="0.5"} 480
+```
+
+### 9.2 日誌結構（tracing）
+
+```json
+{
+  "timestamp": "2026-06-23T10:30:00Z",
+  "level": "INFO",
+  "target": "dllm_core::engine_pool",
+  "span": {
+    "request_id": "req-abc123",
+    "model": "qwen3-30b-a3b-4bit",
+    "user": "api-key-xxx"
+  },
+  "fields": {
+    "message": "模型載入完成",
+    "load_time_ms": 12000,
+    "memory_mb": 45056
+  }
+}
+```
+
+---
+
+## 十、安全設計
+
+### 10.1 認證與授權
+
+| 層級 | 機制 | 說明 |
+|------|------|------|
+| API Key | Bearer Token | 每用戶獨立 API Key，可撤銷 |
+| Admin | Session + CSRF | 管理後台獨立認證 |
+| 模型權限 | RBAC | 不同角色可用不同模型 |
+| 審計日誌 | 不可變儲存 | 所有請求記錄，合規需求 |
+
+### 10.2 資料保護
+
+- **靜態加密**：模型權重、用戶文件、向量資料庫皆加密儲存
+- **傳輸加密**：TLS 1.3（生產環境）
+- **記憶體保護**：模型卸載後立即釋放記憶體（mlock / madvise）
+- **隱私規則**：用戶可設定「不上雲」標籤，強制本地處理
+
+---
+
+## 十一、未來擴展
+
+### 11.1 純 Rust 引擎替代（長期）
+
+當 Atlas / rvLLM / vllm.rs 等純 Rust 引擎成熟時，可無縫替換 vLLM：
+
+```rust
+// 未來：條件編譯切換引擎
+#[cfg(feature = "atlas")]
+pub use atlas_backend::AtlasEngine as DefaultEngine;
+
+#[cfg(feature = "vllm")]
+pub use dllm_nvidia::VLLMProcessEngine as DefaultEngine;
+```
+
+### 11.2 企業級 K8s 模式
+
+```
+┌─────────────────────────────────────────┐
+│           K8s Ingress                    │
+│         （dllm-core Gateway）            │
+└─────────────────┬───────────────────────┘
+                  │
+    ┌─────────────┼─────────────┐
+    ▼             ▼             ▼
+┌────────┐  ┌────────┐  ┌────────┐
+│vLLM Pod│  │vLLM Pod│  │vLLM Pod│  ← HPA 自動擴展
+│Model A │  │Model B │  │Model C │
+└────────┘  └────────┘  └────────┘
+    │             │             │
+    └─────────────┴─────────────┘
+                  │
+          ┌───────┴───────┐
+          ▼               ▼
+    ┌──────────┐    ┌──────────┐
+    │ Qdrant   │    │PostgreSQL│
+    │ Cluster  │    │ Cluster  │
+    └──────────┘    └──────────┘
+```
+
+### 11.3 消費級輕量版
+
+- **硬體**：RTX 5090（24GB）或 MacBook Pro（36GB）
+- **模型**：8B-13B 級，INT4 量化
+- **功能**：基礎 Chat + 輕量 RAG（< 1000 文件）
+- **定價**：$99-199 一次性授權
+
+---
+
+*本文件為 dllm 專案的架構規格，將隨技術演進持續更新。*

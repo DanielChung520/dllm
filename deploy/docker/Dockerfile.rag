@@ -1,0 +1,30 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# 安裝系統依賴
+RUN apt-get update && apt-get install -y \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    tesseract-ocr \
+    tesseract-ocr-chi-sim \
+    tesseract-ocr-chi-tra \
+    && rm -rf /var/lib/apt/lists/*
+
+# 複製依賴
+COPY services/dllm-rag/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 複製原始碼
+COPY services/dllm-rag/ .
+
+# 建立目錄
+RUN mkdir -p /models /documents
+
+EXPOSE 8000
+
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

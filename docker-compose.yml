@@ -33,25 +33,22 @@ services:
       start_period: 60s
 
   # vLLM 推理引擎
-  # ⚠️ DGX Spark (128GB) 專用配置
-  # 總記憶體 128GB = 系統 12GB + 服務 8GB + vLLM ~85GB + 緩衝 23GB
+  # DGX Spark 配置：4 個模型共 ~38GB，空間充裕
   vllm:
     image: vllm/vllm-openai:latest
     runtime: nvidia
     environment:
       - CUDA_VISIBLE_DEVICES=0
-      # 限制 GPU 記憶體使用上限（128GB 統一記憶體）
-      # 0.70 = ~90GB，保留空間給 Embedding + Qdrant + 系統
-      - GPU_MEMORY_UTILIZATION=0.70
-      # GB10 建議上下文長度（65536 會吃掉過多 KV cache）
+      # 多模型場景，保留空間給多個引擎
+      - GPU_MEMORY_UTILIZATION=0.80
+      # 30B MoE + 8B VLM 都夠用
       - MAX_MODEL_LEN=32768
-      # 並發數降低以節省 KV cache
+      # 多模型並發降低
       - MAX_NUM_SEQS=8
       # 啟用 chunked prefill 降低記憶體峰值
       - VLLM_CHUNKED_PREFILL_SIZE=2048
     volumes:
       - ./data/models:/models
-    # 記憶體限制：防止 OOM 拖垮整個系統
     mem_limit: 96g
     # 不暴露對外端口，由 dllm-core 透過內部網路調用
     networks:

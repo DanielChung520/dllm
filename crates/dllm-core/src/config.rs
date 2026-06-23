@@ -84,6 +84,25 @@ impl Default for EnginePoolConfig {
     }
 }
 
+impl EnginePoolConfig {
+    /// GB10 建議預設：4 個模型共 ~38GB，空間充裕
+    pub fn gb10_default() -> Self {
+        Self {
+            model_dirs: vec![PathBuf::from("~/.dllm/models")],
+            pinned_models: vec![
+                "qwen3-coder-30b-a3b-4bit".to_string(),
+                "qwen2.5-vl-8b".to_string(),
+                "bge-m3".to_string(),
+            ],
+            default_model: Some("qwen3-coder-30b-a3b-4bit".to_string()),
+            memory_guard: MemoryGuardMode::Balanced,
+            ttl_seconds: Some(3600),
+            max_concurrent_requests: 8,
+            preload_on_startup: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RagConfig {
     pub qdrant_url: String,

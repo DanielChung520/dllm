@@ -35,37 +35,50 @@
 
 | 硬體 | 記憶體 | 可同時載入 | 主力模型建議 |
 |------|--------|-----------|-------------|
-| **DGX Spark** | 128GB | 1x 70B INT4 或 2x 30B INT4 | Qwen3-30B/70B |
-| **Mac Studio** (M2 Ultra) | 192GB | 1x 122B + 1x 30B | Qwen3.5-122B |
-| **RTX 5090** | 32GB VRAM | 1x 13B INT4 + CPU offloading | Qwen3-8B/13B |
-| **H100** (單卡) | 80GB VRAM | 1x 70B（需 CPU offloading） | Qwen3-70B |
-| **H100** (雙卡) | 160GB VRAM | 1x 122B | Qwen3.5-122B |
+| **DGX Spark** | 128GB | 4 個共 ~38GB（30B Coder + 8B VLM + Embedding + 0.8B） | Qwen3-Coder-30B + Qwen2.5-VL-8B |
+| **Mac Studio** (M2 Ultra) | 192GB | 更多 + 更大模型 | Qwen3.5-122B + 其他 |
+| **RTX 5090** | 32GB VRAM | 1-2 個小模型 | Qwen3-Coder-8B |
+| **H100** (雙卡) | 160GB VRAM | 4+ 個大模型 | 彈性擴展 |
 
 ### GB-10 關鍵配置限制
 
-| 設定項 | 預設值 | 限制原因 |
-|--------|--------|---------|
-| `gpu-memory-utilization` | 0.70 | 保留空間給系統與其他服務 |
-| `max-model-len` | 32768 | 65536 會吃掉過多 KV cache |
-| `max-num-seqs` | 8 | 降低並發以節省記憶體 |
+| 設定項 | 預設值 | 說明 |
+|--------|--------|------|
+| `gpu-memory-utilization` | 0.80 | 4 個模型共 ~38GB，空間充裕 |
+| `max-model-len` | 32768 | 30B MoE + 8B VLM 都夠用 |
+| `max-num-seqs` | 8 | 多模型並發上限 |
 | `max-concurrent-requests` | 8 | Engine Pool 並發上限 |
-| `memory_guard` | safe | 保留較多系統記憶體 |
+| `memory_guard` | balanced | 記憶體充足，用平衡模式 |
 | Docker `mem_limit` (vLLM) | 96GB | 防止單一容器拖垮系統 |
+| 預設固定載入 | 3 個模型 | 30B Coder + 8B VLM + Embedding |
 
-### 不建議在 128GB 上執行的操作
+> ✅ **結論：128GB 在 4 個模型（~38GB）下非常充裕，剩餘 ~60GB 緩衝。**
 
-- ❌ 同時載入 2 個 70B 模型
-- ❌ 122B 模型 + 完整 RAG + Agent 同時運行
-- ❌ `max-model-len=65536` 搭配高並發
-- ❌ Engine Pool 自動載入多個大模型（需手動管理）
+### 128GB 上的實際配置
+
+```toml
+[engine]
+# 開機即載入，永不卸載
+pinned_models = [
+    "qwen3-coder-30b-a3b-4bit",  # ~26GB（含 KV cache）
+    "qwen2.5-vl-8b",              # ~9GB（含 KV cache）
+    "bge-m3",                     # ~2GB
+]
+default_model = "qwen3-coder-30b-a3b-4bit"
+
+# 按需載入，閒置自動卸載
+# qwen3.5-0.8b                    # ~1GB（備用）
+```
 
 ### 建議的產品定位
 
-**128GB GB-10 = 「1 個主力模型 + 知識庫」的輕量企業 AI Box**
+**128GB GB-10 = 「程式開發 + 多模態 + 知識庫」的輕量 AI Box**
 
-- 主力：30-70B INT4 模型（Qwen3/Llama3）
-- 輔助：BGE-M3 Embedding（RAG 使用）
-- 功能：文件上傳、知識庫問答、基礎資料庫查詢
+- 主力：Qwen3-Coder-30B（程式生成、企業問答）
+- 視覺：Qwen2.5-VL-8B（圖片辨識、文件 OCR）
+- 檢索：BGE-M3（RAG 嵌入）
+- 備用：Qwen3.5-0.8B（簡單降載）
+- 功能：文件上傳、知識庫問答、資料庫查詢、圖片問答
 - 用戶數：4-8 人同時使用
 
 ---

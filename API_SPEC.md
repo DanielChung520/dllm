@@ -173,221 +173,9 @@ Authorization: Bearer {api_key}
 
 ---
 
-## 二、RAG API（dllm 擴展）
+## 二、Admin API（管理用）
 
-### 2.1 建立知識庫
-
-```http
-POST /v1/rag/knowledge-bases
-Content-Type: application/json
-Authorization: Bearer {api_key}
-```
-
-**Request Body**：
-
-```json
-{
-  "name": "公司產品手冊",
-  "description": "2026 年產品規格與說明",
-  "embedding_model": "bge-m3",
-  "chunk_strategy": "semantic",
-  "metadata": {
-    "department": "產品部",
-    "access_level": "internal"
-  }
-}
-```
-
-**Response**：
-
-```json
-{
-  "id": "kb-abc123",
-  "name": "公司產品手冊",
-  "status": "ready",
-  "document_count": 0,
-  "created_at": "2026-06-23T10:00:00Z"
-}
-```
-
-### 2.2 上傳文件
-
-```http
-POST /v1/rag/knowledge-bases/{kb_id}/documents
-Content-Type: multipart/form-data
-Authorization: Bearer {api_key}
-```
-
-**Form Data**：
-
-```
-file: <binary>
-metadata: {"author":"產品部","date":"2026-06-01"}
-```
-
-**Response**：
-
-```json
-{
-  "id": "doc-xyz789",
-  "filename": "product-manual-2026.pdf",
-  "status": "processing",
-  "chunks_expected": 50,
-  "uploaded_at": "2026-06-23T10:05:00Z"
-}
-```
-
-### 2.3 RAG 查詢
-
-```http
-POST /v1/rag/query
-Content-Type: application/json
-Authorization: Bearer {api_key}
-```
-
-**Request Body**：
-
-```json
-{
-  "knowledge_base_ids": ["kb-abc123", "kb-def456"],
-  "query": "新款筆電的電池續航力是多少？",
-  "top_k": 5,
-  "rerank": true,
-  "hybrid_search": true,
-  "stream": false
-}
-```
-
-**Response**：
-
-```json
-{
-  "answer": "根據產品手冊，2026 年新款筆電的電池續航力為 18 小時（輕度使用）或 12 小時（重度使用）。",
-  "sources": [
-    {
-      "document_id": "doc-xyz789",
-      "filename": "product-manual-2026.pdf",
-      "page": 24,
-      "chunk_text": "電池規格：96Wh 鋰聚合物電池，支援 18 小時輕度使用...",
-      "score": 0.92
-    }
-  ],
-  "usage": {
-    "retrieval_tokens": 128,
-    "generation_tokens": 64,
-    "total_tokens": 192
-  }
-}
-```
-
-### 2.4 串流 RAG 查詢
-
-當 `stream: true` 時，返回 SSE：
-
-```
-data: {"type":"retrieval","sources":[{"document_id":"doc-xyz789","score":0.92}]}
-
-data: {"type":"generation","content":"根據"}
-
-data: {"type":"generation","content":"產品手冊"}
-
-...（持續輸出）...
-
-data: {"type":"done","sources":[...]}
-```
-
----
-
-## 三、Agent API（dllm 擴展）
-
-### 3.1 執行 Agent
-
-```http
-POST /v1/agent/run
-Content-Type: application/json
-Authorization: Bearer {api_key}
-```
-
-**Request Body**：
-
-```json
-{
-  "agent_id": "sales-assistant",
-  "messages": [
-    {"role": "user", "content": "幫我整理上週的銷售數據並發郵件給經理"}
-  ],
-  "tools": ["query_database", "send_email", "generate_chart"],
-  "max_iterations": 10,
-  "stream": true
-}
-```
-
-**Response（串流）**：
-
-```
-data: {"type":"thought","content":"用戶要求整理銷售數據並發郵件。我需要：1. 查詢資料庫 2. 生成圖表 3. 撰寫郵件 4. 發送"}
-
-data: {"type":"tool_call","tool":"query_database","input":{"sql":"SELECT * FROM sales WHERE week = 25"}}
-
-data: {"type":"tool_result","tool":"query_database","output":{"rows":15,"summary":"總銷售額 NT$ 500,000"}}
-
-...（中間步驟）...
-
-data: {"type":"tool_call","tool":"send_email","input":{"to":"manager@company.com","subject":"上週銷售報告","body":"..."}}
-
-data: {"type":"final","content":"已完成！上週銷售報告已發送至經理信箱。總銷售額 NT$ 500,000，較前週成長 15%。"}
-```
-
-### 3.2 列出可用工具
-
-```http
-GET /v1/agent/tools
-Authorization: Bearer {api_key}
-```
-
-**Response**：
-
-```json
-{
-  "tools": [
-    {
-      "name": "query_database",
-      "description": "查詢企業資料庫",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "sql": {"type": "string", "description": "SQL 查詢語句"}
-        }
-      }
-    },
-    {
-      "name": "send_email",
-      "description": "發送電子郵件",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "to": {"type": "string"},
-          "subject": {"type": "string"},
-          "body": {"type": "string"}
-        }
-      }
-    }
-  ],
-  "mcp_servers": [
-    {
-      "name": "slack",
-      "status": "connected",
-      "tools": ["slack_send_message", "slack_read_channel"]
-    }
-  ]
-}
-```
-
----
-
-## 四、管理 API（Admin）
-
-### 4.1 系統狀態
+### 2.1 系統狀態
 
 ```http
 GET /v1/system/status
@@ -423,7 +211,7 @@ Authorization: Bearer {admin_api_key}
 }
 ```
 
-### 4.2 模型管理
+### 2.2 模型管理
 
 ```http
 # 手動載入模型
@@ -443,7 +231,7 @@ POST /v1/models/{model_id}/unpin
 Authorization: Bearer {admin_api_key}
 ```
 
-### 4.3 設定管理
+### 2.3 設定管理
 
 ```http
 GET /v1/system/config
@@ -463,9 +251,9 @@ Authorization: Bearer {admin_api_key}
 
 ---
 
-## 五、錯誤處理
+## 三、錯誤處理
 
-### 5.1 錯誤格式
+### 3.1 錯誤格式
 
 ```json
 {
@@ -483,7 +271,7 @@ Authorization: Bearer {admin_api_key}
 }
 ```
 
-### 5.2 錯誤碼對照
+### 3.2 錯誤碼對照
 
 | HTTP Status | Code | 說明 |
 |-------------|------|------|
@@ -497,45 +285,6 @@ Authorization: Bearer {admin_api_key}
 | 503 | `insufficient_memory` | 記憶體不足 |
 | 504 | `cloud_timeout` | 雲端連接超時 |
 
----
 
-## 六、WebSocket API（即時監控）
-
-### 6.1 連接
-
-```
-WS /v1/ws/monitor
-Authorization: Bearer {admin_api_key}
-```
-
-### 6.2 訊息格式
-
-**Server → Client**：
-
-```json
-{
-  "type": "metrics",
-  "timestamp": "2026-06-23T10:00:00Z",
-  "data": {
-    "gpu_utilization": 45,
-    "gpu_memory_used_mb": 45056,
-    "requests_per_second": 2.5,
-    "active_requests": 3
-  }
-}
-```
-
-```json
-{
-  "type": "event",
-  "event": "model_loaded",
-  "data": {
-    "model_id": "qwen3-30b-a3b-4bit",
-    "load_time_ms": 12000
-  }
-}
-```
-
----
 
 *本文件為 dllm API 規格，將隨功能迭代持續更新。*

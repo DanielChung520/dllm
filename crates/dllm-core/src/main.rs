@@ -44,8 +44,14 @@ enum Commands {
     },
     /// 停止伺服器
     Stop,
-    /// 查看狀態
+    /// 查看服務狀態
     Status,
+    /// 查看最近日誌
+    Log {
+        /// 行數（預設 50）
+        #[arg(short, long, default_value = "50")]
+        lines: usize,
+    },
     /// 列出可用模型
     Models,
     /// 載入指定模型
@@ -169,12 +175,25 @@ async fn main() -> anyhow::Result<()> {
             axum::serve(listener, app).await?;
         }
         Commands::Stop => {
-            println!("停止伺服器...");
-            // TODO: 實現優雅停止
+            let mut cmd = std::process::Command::new("pkill");
+            cmd.arg("-f").arg("dllm serve");
+            if cfg!(target_os = "macos") {
+                cmd.arg("-x");
+            }
+            match cmd.status() {
+                Ok(_) => println!("✅ 已停止 dllm 服務"),
+                Err(_) => println!("⚠️  停止指令執行失敗（可能服務未啟動）"),
+            }
         }
         Commands::Status => {
-            println!("檢查伺服器狀態...");
-            // TODO: 調用 /health
+            commands::check_status().await.unwrap_or_else(|e| {
+                eprintln!("錯誤: {}", e);
+            });
+        }
+        Commands::Log { lines } => {
+            commands::show_log(lines).unwrap_or_else(|e| {
+                eprintln!("錯誤: {}", e);
+            });
         }
         Commands::Models => {
             println!("列出可用模型...");

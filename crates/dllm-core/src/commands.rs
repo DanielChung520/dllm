@@ -369,3 +369,79 @@ pub async fn run_model(model: &str, prompt: Option<&str>) -> Result<(), String> 
 
     Ok(())
 }
+
+/// 檢查 dllm 服務狀態
+pub async fn check_status() -> Result<(), String> {
+    use reqwest::Client;
+
+    let api = std::env::var("DLLM_API_URL").unwrap_or_else(|_| "http://localhost:11400".to_string());
+    let client = Client::new();
+
+    // 健康檢查
+    match client.get(&format!("{}/health", api)).send().await {
+        Ok(resp) => {
+            let status: serde_json::Value = resp.json().await.map_err(|e| format!("解析失敗: {}", e))?;
+            println!("📊 dllm 服務狀態");
+            println!("{}", serde_json::to_string_pretty(&status).unwrap_or_default());
+        }
+        Err(_) => {
+            println!("❌ dllm 服務未運行 (預期端口: {})", if api.contains(":") { &api } else { "11400" });
+            println!("   請執行 `dllm serve` 啟動服務");
+        }
+    }
+
+    // 檢查 vLLM 後端
+    let vllm_url = std::env::var("VLLM_DIRECT_URL").unwrap_or_else(|_| "http://127.0.0.1:18001".to_string());
+    match client.get(&format!("{}/v1/models", vllm_url)).send().await {
+        Ok(resp) => {
+            if let Ok(models) = resp.json::<serde_json::Value>().await {
+                let count = models["data"].as_array().map(|a| a.len()).unwrap_or(0);
+                println!("vLLM 後端: 運行中 ({} 個模型載入)", count);
+            }
+        }
+        Err(_) => println!("vLLM 後端: 未運行"),
+    }
+
+    // 系統資源
+    let mem = std::process::Command::new("free")
+        .arg("-h").output().ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+    for line in mem.lines().take(2) {
+        println!("{}", line);
+    }
+
+    Ok(())
+}
+
+/// 顯示日誌
+pub fn show_log(lines: usize) -> Result<(), String> {
+    let log_dirs = vec![
+        "/var/log/dllm.log",
+        "/tmp/dllm.log",
+        "/home/daniel/.dllm/logs/server.log",
+    ];
+
+    let log_file = log_dirs.iter().find(|p| std::path::Path::new(p).exists());
+    
+    match log_file {
+        Some(path) => {
+            let output = std::process::Command::new("tail")
+                .arg("-n").arg(lines.to_string())
+                .arg(path)
+                .output()
+                .map_err(|e| format!("讀取日誌失敗: {}", e))?;
+            print!("{}", String::from_utf8_lossy(&output.stdout));
+        }
+        None => {
+            // 退回到 journalctl
+            let output = std::process::Command::new("journalctl")
+                .args(["-u", "dllm-core", "--no-pager", "-n", &lines.to_string()])
+                .output()
+                .map_err(|e| format!("讀取日誌失敗: {}", e))?;
+            print!("{}", String::from_utf8_lossy(&output.stdout));
+        }
+    }
+
+    Ok(())
+}

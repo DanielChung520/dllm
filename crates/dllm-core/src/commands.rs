@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 
 const DEFAULT_MODEL_DIR: &str = ".dllm/models";
 const INDEX_FILE: &str = ".index.json";
@@ -443,5 +444,85 @@ pub fn show_log(lines: usize) -> Result<(), String> {
         }
     }
 
+    Ok(())
+}
+
+// ==================== 配置系統 ====================
+
+const CONFIG_FILE: &str = ".dllm/config.json";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DllmConfig {
+    pub port: Option<u16>,
+    pub default_model: Option<String>,
+    pub log_dir: Option<String>,
+    pub model_dir: Option<String>,
+    pub vllm_url: Option<String>,
+    pub memory_guard: Option<String>,
+    pub api_key: Option<String>,
+}
+
+impl DllmConfig {
+    fn config_path() -> PathBuf {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        PathBuf::from(home).join(CONFIG_FILE)
+    }
+
+    pub fn load() -> Self {
+        std::fs::read_to_string(Self::config_path())
+            .ok().and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self) -> Result<(), String> {
+        let path = Self::config_path();
+        if let Some(p) = path.parent() { std::fs::create_dir_all(p).map_err(|e| format!("{}", e))?; }
+        std::fs::write(&path, serde_json::to_string_pretty(self).map_err(|e| format!("{}", e))?)
+            .map_err(|e| format!("{}", e))
+    }
+
+    pub fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
+        match key {
+            "port" => self.port = Some(value.parse().map_err(|_| "port 需為整數")?),
+            "default_model" => self.default_model = Some(value.to_string()),
+            "log_dir" => self.log_dir = Some(value.to_string()),
+            "model_dir" => self.model_dir = Some(value.to_string()),
+            "vllm_url" => self.vllm_url = Some(value.to_string()),
+            "memory_guard" => self.memory_guard = Some(value.to_string()),
+            "api_key" => self.api_key = Some(value.to_string()),
+            _ => return Err(format!("未知設定: {}\n可用: port, default_model, log_dir, model_dir, vllm_url, memory_guard, api_key", key)),
+        }
+        self.save()?;
+        println!("✅ {} = {}", key, value);
+        Ok(())
+    }
+}
+
+impl Default for DllmConfig {
+    fn default() -> Self {
+        Self {
+            port: Some(11400),
+            default_model: None,
+            log_dir: Some("~/.dllm/logs".to_string()),
+            model_dir: Some("~/.dllm/models".to_string()),
+            vllm_url: Some("http://127.0.0.1:18001".to_string()),
+            memory_guard: Some("balanced".to_string()),
+            api_key: None,
+        }
+    }
+}
+
+pub fn handle_config(action: super::ConfigAction) -> Result<(), String> {
+    let mut cfg = DllmConfig::load();
+    match action {
+        super::ConfigAction::Show => {
+            println!("📋 dllm 配置 ({})", DllmConfig::config_path().display());
+            println!("{}", serde_json::to_string_pretty(&cfg).unwrap_or_default());
+            println!("\n設定方式: dllm config set <key> <value>");
+        }
+        super::ConfigAction::Set { key, value } => {
+            cfg.set(&key, &value)?;
+        }
+    }
     Ok(())
 }

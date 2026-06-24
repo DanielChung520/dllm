@@ -88,10 +88,28 @@ enum Commands {
     },
     /// 在終端機直接與模型對話（類似 ollama run）
     Run {
-        /// 模型名稱（目錄名或 repo_id）
-        model: String,
+        /// 模型名稱（目錄名或 repo_id，預設使用 config 中的 default_model）
+        model: Option<String>,
         /// 可選的單次提示詞（若有則不進入互動模式）
         prompt: Option<String>,
+    },
+    /// 檢視與設定 dllm 配置
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(clap::Subcommand)]
+enum ConfigAction {
+    /// 檢視目前配置
+    Show,
+    /// 設定配置值（如：port, default_model, log_dir 等）
+    Set {
+        /// 設定名稱
+        key: String,
+        /// 設定值
+        value: String,
     },
 }
 
@@ -226,7 +244,19 @@ async fn main() -> anyhow::Result<()> {
             });
         }
         Commands::Run { model, prompt } => {
-            commands::run_model(&model, prompt.as_deref()).await.unwrap_or_else(|e| {
+            let cfg = commands::DllmConfig::load();
+            let model_name = model.unwrap_or_else(|| cfg.default_model.clone().unwrap_or_else(|| {
+                eprintln!("❌ 未指定模型，且 config 中也無 default_model");
+                eprintln!("   請執行 `dllm run <模型名稱>` 或 `dllm config set default_model <名稱>`");
+                std::process::exit(1);
+            }));
+            commands::run_model(&model_name, prompt.as_deref()).await.unwrap_or_else(|e| {
+                eprintln!("錯誤: {}", e);
+                std::process::exit(1);
+            });
+        }
+        Commands::Config { action } => {
+            commands::handle_config(action).unwrap_or_else(|e| {
                 eprintln!("錯誤: {}", e);
                 std::process::exit(1);
             });

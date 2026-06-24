@@ -63,12 +63,14 @@ impl EnginePool {
         // 掃描模型
         pool.discover_models().await?;
 
-        // 載入固定模型
+        // 載入常駐模型（pinned）
         for model_id in &config.pinned_models {
             if let Err(e) = pool.load_model(model_id.clone()).await {
-                warn!("無法載入固定模型 {}: {}", model_id, e);
+                warn!("無法載入常駐模型 {}: {}", model_id, e);
             }
         }
+
+        // 熱載入邏輯改由外部呼叫（Arc<EnginePool>），見 start_background_tasks
 
         info!("Engine Pool 初始化完成");
         Ok(pool)
@@ -363,5 +365,47 @@ impl EnginePool {
     /// 取得記憶體快照
     pub fn memory_snapshot(&self) -> MemorySnapshot {
         self.memory_enforcer.snapshot()
+    }
+
+    /// 啟動背景任務（熱載入 + 備援監控）
+    /// 需在 EnginePool 初始化完成後由外部呼叫（持有 Arc）
+    pub async fn start_background_tasks(self: Arc<Self>) {
+        let config = self.config.clone();
+
+        // 熱載入：啟動 10 秒後載入 hot_models
+        let pool = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            for model_id in &config.hot_models {
+                if !pool.engines.contains_key(model_id) {
+                    info!("🔥 熱載入模型: {}", model_id);
+                    if let Err(e) = pool.load_model(model_id.clone()).await {
+                        warn!("熱載入 {} 失敗: {}", model_id, e);
+                    }
+                }
+            }
+        });
+
+        // 備援監控：每 30 秒檢查主力模型狀態
+        let pool = self.clone();
+        let standby = config.standby_model.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(30));
+            loop {
+                ticker.tick().await;
+                if let Some(ref standby_id) = standby {
+                    // 檢查預設模型是否已載入
+                    if let Some(default) = &pool.config.default_model {
+                        if !pool.engines.contains_key(default) {
+                            // 主力不在，確保備援已載入
+                            if !pool.engines.contains_key(standby_id) {
+                                info!("🔄 備援模型載入: {}（主力 {} 未就緒）", standby_id, default);
+                                let _ = pool.load_model(standby_id.clone()).await;
+                            }
+                        }
+                    }
+                }
+            }
+        });
     }
 }

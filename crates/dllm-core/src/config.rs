@@ -50,7 +50,12 @@ impl Default for ServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnginePoolConfig {
     pub model_dirs: Vec<PathBuf>,
+    /// 常駐模型：開機載入，永不被 evict
     pub pinned_models: Vec<String>,
+    /// 熱載入模型：記憶體足夠時預先載入，保持 warm
+    pub hot_models: Vec<String>,
+    /// 備援模型：主力忙碌時自動降級使用
+    pub standby_model: Option<String>,
     pub default_model: Option<String>,
     pub memory_guard: MemoryGuardMode,
     pub ttl_seconds: Option<u64>,
@@ -63,6 +68,8 @@ impl Default for EnginePoolConfig {
         Self {
             model_dirs: vec![PathBuf::from("~/.dllm/models")],
             pinned_models: vec![],
+            hot_models: vec![],
+            standby_model: None,
             default_model: None,
             memory_guard: MemoryGuardMode::Balanced,
             ttl_seconds: Some(3600),
@@ -73,15 +80,33 @@ impl Default for EnginePoolConfig {
 }
 
 impl EnginePoolConfig {
-    /// GB10 建議預設：4 個模型共 ~38GB，空間充裕
+    /// Mac Mini 64GB 預設：保守配置，僅 pinned 模型
+    pub fn macmini64_default() -> Self {
+        Self {
+            model_dirs: vec![PathBuf::from("~/.dllm/models")],
+            pinned_models: vec!["qwen3-coder-30b-a3b-4bit".to_string()],
+            hot_models: vec!["qwen2.5-vl-8b".to_string()],
+            standby_model: Some("qwen3.5-0.8b".to_string()),
+            default_model: Some("qwen3-coder-30b-a3b-4bit".to_string()),
+            memory_guard: MemoryGuardMode::Safe,
+            ttl_seconds: Some(1800),
+            max_concurrent_requests: 4,
+            preload_on_startup: true,
+        }
+    }
+
+    /// DGX Spark 128GB 預設：空間充裕
     pub fn gb10_default() -> Self {
         Self {
             model_dirs: vec![PathBuf::from("~/.dllm/models")],
             pinned_models: vec![
                 "qwen3-coder-30b-a3b-4bit".to_string(),
+            ],
+            hot_models: vec![
                 "qwen2.5-vl-8b".to_string(),
                 "bge-m3".to_string(),
             ],
+            standby_model: Some("qwen3.5-0.8b".to_string()),
             default_model: Some("qwen3-coder-30b-a3b-4bit".to_string()),
             memory_guard: MemoryGuardMode::Balanced,
             ttl_seconds: Some(3600),

@@ -17,6 +17,9 @@ pub async fn create_app(config: AppConfig) -> anyhow::Result<Router> {
     // 初始化 Engine Pool
     let engine_pool = Arc::new(EnginePool::new(config.engine.clone()).await?);
 
+    // 啟動背景任務（熱載入 + 備援監控）
+    engine_pool.clone().start_background_tasks().await;
+
     // 建立路由
     let app = Router::new()
         // 健康檢查

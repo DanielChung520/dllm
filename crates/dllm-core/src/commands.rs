@@ -223,3 +223,149 @@ pub fn remove_model(model: &str) -> Result<(), String> {
     println!("✅ 已刪除: {}", model);
     Ok(())
 }
+
+/// 在終端機直接與模型對話（類似 ollama run）
+pub async fn run_model(model: &str, prompt: Option<&str>) -> Result<(), String> {
+    let models_dir = models_dir();
+    let model_path = models_dir.join(model);
+    
+    if !model_path.exists() || !model_path.join("config.json").exists() {
+        return Err(format!("模型 '{}' 不存在。請先用 `dllm pull {}` 下載。", model, model));
+    }
+
+    // 從 index 或 config 取得模型資訊
+    let index = read_index();
+    let repo_id = index.get(model)
+        .and_then(|m| m.get("repo_id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(model);
+
+    println!("🚀 正在載入模型: {} ({})", model, repo_id);
+    println!("   輸入 /bye 或 Ctrl+C 結束對話");
+    println!("   輸入 /clear 清除對話歷史");
+    println!("   輸入 /help 查看更多指令");
+    println!();
+
+    // 先測試 API 是否可用（連接到本機 dllm-core 或 vLLM）
+    let api_base = if let Ok(url) = std::env::var("DLLM_RUN_API") {
+        url
+    } else {
+        "http://localhost:11400/v1".to_string()
+    };
+
+    let client = reqwest::Client::new();
+
+    // 測試連線
+    match client.get(&format!("{}/models", api_base)).send().await {
+        Ok(_) => {}
+        Err(_) => {
+            println!("⚠️  無法連接到 API 伺服器 ({})", api_base);
+            println!("   請先啟動 `dllm serve` 或設定 DLLM_RUN_API");
+            return Err("連線失敗".to_string());
+        }
+    }
+    
+    // 取得 API 用的 model id
+    let model_api_id = model_path.to_string_lossy();
+
+    if let Some(single_prompt) = prompt {
+        let body = serde_json::json!({
+            "model": model_api_id,
+            "messages": [{"role": "user", "content": single_prompt}],
+            "stream": false,
+            "max_tokens": 2048,
+        });
+
+        let resp = client.post(&format!("{}/chat/completions", api_base))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("請求失敗: {}", e))?;
+
+        let reply = resp.json::<serde_json::Value>().await
+            .map_err(|e| format!("解析回應失敗: {}", e))?;
+
+        let content = reply["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("（無回應）");
+
+        println!("{}", content);
+        return Ok(());
+    }
+
+    // 互動模式
+    let mut history: Vec<serde_json::Value> = vec![
+        serde_json::json!({"role": "system", "content": "你是一個有用的 AI 助手。請用繁體中文回答。"})
+    ];
+    
+    let mut input = String::new();
+
+    loop {
+        print!("\n>>> ");
+        use std::io::Write;
+        std::io::stdout().flush().unwrap();
+
+        input.clear();
+        if std::io::stdin().read_line(&mut input).is_err() {
+            break;
+        }
+
+        let input = input.trim().to_string();
+        if input.is_empty() { continue; }
+
+        match input.as_str() {
+            "/bye" | "/exit" | "/quit" => {
+                println!("再見！");
+                break;
+            }
+            "/clear" => {
+                history.truncate(1);
+                println!("對話歷史已清除");
+                continue;
+            }
+            "/help" => {
+                println!("可用指令:");
+                println!("  /bye    結束對話");
+                println!("  /clear  清除對話歷史");
+                println!("  /help   顯示此說明");
+                continue;
+            }
+            _ => {}
+        }
+
+        history.push(serde_json::json!({"role": "user", "content": input}));
+
+        let body = serde_json::json!({
+            "model": model_api_id,
+            "messages": history,
+            "stream": false,
+            "max_tokens": 2048,
+        });
+
+        let resp = match client.post(&format!("{}/chat/completions", api_base))
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("請求失敗: {}", e);
+                history.pop();
+                continue;
+            }
+        };
+
+        let reply = resp.json::<serde_json::Value>().await
+            .map_err(|e| format!("解析回應失敗: {}", e))?;
+
+        let content = reply["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("（無回應）");
+
+        println!("\n{}", content);
+
+        history.push(serde_json::json!({"role": "assistant", "content": content}));
+    }
+
+    Ok(())
+}

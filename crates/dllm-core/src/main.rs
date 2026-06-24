@@ -80,6 +80,13 @@ enum Commands {
         #[command(subcommand)]
         action: KeyAction,
     },
+    /// 在終端機直接與模型對話（類似 ollama run）
+    Run {
+        /// 模型名稱（目錄名或 repo_id）
+        model: String,
+        /// 可選的單次提示詞（若有則不進入互動模式）
+        prompt: Option<String>,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -195,6 +202,12 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Rm { model } => {
             commands::remove_model(&model).unwrap_or_else(|e| {
+                eprintln!("錯誤: {}", e);
+                std::process::exit(1);
+            });
+        }
+        Commands::Run { model, prompt } => {
+            commands::run_model(&model, prompt.as_deref()).await.unwrap_or_else(|e| {
                 eprintln!("錯誤: {}", e);
                 std::process::exit(1);
             });

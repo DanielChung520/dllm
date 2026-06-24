@@ -1,18 +1,17 @@
 //! Engine Pool — 多模型管理核心
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use tokio::sync::Semaphore;
-use tracing::{info, warn, error};
+use tracing::{info, warn};
 
 use dllm_shared::{
     engine::{EngineConfig, EngineFactory, InferenceEngine},
     error::EngineError,
-    memory::{MemoryEnforcer, MemoryGuardMode, MemorySnapshot},
+    memory::{MemoryEnforcer, MemorySnapshot},
     model::{ModelInfo, ModelLoadStatus, ModelStatus},
 };
 
@@ -150,7 +149,7 @@ impl EnginePool {
         let engine = self.create_engine(&model_id, &model_info).await?;
         
         // 註冊引擎（以 Arc 包裝）
-        self.engines.insert(model_id.clone(), Arc::from(engine));
+        self.engines.insert(model_id.clone(), engine);
         self.memory_enforcer.register_engine(model_id.clone(), required_mb);
         
         // 更新 LRU

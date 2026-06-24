@@ -2,11 +2,9 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
 use dashmap::DashMap;
-use tokio::time::{interval, Duration};
-use tracing::{info, warn};
+use tracing::info;
 
 use dllm_shared::memory::{MemoryEnforcer, MemoryGuardMode, MemorySnapshot, SystemMemoryInfo};
 

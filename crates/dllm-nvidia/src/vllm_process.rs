@@ -136,7 +136,7 @@ async fn wait_for_ready(base_url: &str) -> Result<(), EngineError> {
     let client = reqwest::Client::new();
     let health_url = format!("{}/health", base_url);
 
-    for attempt in 0..60 {
+    for _attempt in 0..60 {
         match client.get(&health_url).send().await {
             Ok(response) if response.status().is_success() => {
                 return Ok(());

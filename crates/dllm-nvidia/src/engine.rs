@@ -3,10 +3,10 @@
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::info;
 
 use dllm_shared::{
-    engine::{EngineConfig, InferenceEngine},
+    engine::InferenceEngine,
     error::EngineError,
     memory::MemorySnapshot,
     model::ModelInfo,

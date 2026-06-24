@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use dllm_shared::memory::MemoryGuardMode;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct AppConfig {
     pub server: ServerConfig,
     pub engine: EnginePoolConfig,
@@ -16,19 +17,6 @@ pub struct AppConfig {
     pub logging: LoggingConfig,
 }
 
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            engine: EnginePoolConfig::default(),
-            rag: RagConfig::default(),
-            agent: AgentConfig::default(),
-            cloud: CloudConfig::default(),
-            auth: AuthConfig::default(),
-            logging: LoggingConfig::default(),
-        }
-    }
-}
 
 impl AppConfig {
     pub fn from_file(path: &str) -> anyhow::Result<Self> {

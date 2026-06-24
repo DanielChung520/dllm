@@ -16,6 +16,12 @@ use crate::mlx_process::MLXProcess;
 /// MLX 引擎工廠
 pub struct MLXEngineFactory;
 
+impl Default for MLXEngineFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MLXEngineFactory {
     pub fn new() -> Self {
         Self

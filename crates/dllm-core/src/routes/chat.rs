@@ -49,12 +49,12 @@ pub async fn chat_completions(
             }
             match engine.generate(request).await {
                 Ok(response) => {
-                    return Json(serde_json::to_value(&response).unwrap_or_default()).into_response();
+                    Json(serde_json::to_value(&response).unwrap_or_default()).into_response()
                 }
                 Err(e) => {
-                    return Json(serde_json::json!({
+                    Json(serde_json::json!({
                         "error": {"message": e.to_string(), "type": "engine_error", "code": "generation_failed"}
-                    })).into_response();
+                    })).into_response()
                 }
             }
         }
@@ -95,7 +95,7 @@ async fn proxy_to_vllm(
                         return None;
                     }
                     Some(Ok::<_, std::convert::Infallible>(
-                        Event::default().data(json.to_string())
+                        Event::default().data(json)
                     ))
                 });
                 return Sse::new(stream).into_response();

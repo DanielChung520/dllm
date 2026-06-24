@@ -16,6 +16,12 @@ use crate::vllm_process::VLLMProcess;
 /// vLLM 引擎工廠
 pub struct VLLMEngineFactory;
 
+impl Default for VLLMEngineFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VLLMEngineFactory {
     pub fn new() -> Self {
         Self

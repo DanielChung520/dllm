@@ -5,10 +5,12 @@ use std::collections::HashMap;
 
 /// 記憶體守衛模式
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum MemoryGuardMode {
     /// 保守模式：保留較多系統記憶體
     Safe,
     /// 平衡模式：預設
+    #[default]
     Balanced,
     /// 積極模式：允許 AI 使用更多記憶體
     Aggressive,
@@ -16,11 +18,6 @@ pub enum MemoryGuardMode {
     Custom { max_gb: f64 },
 }
 
-impl Default for MemoryGuardMode {
-    fn default() -> Self {
-        MemoryGuardMode::Balanced
-    }
-}
 
 impl MemoryGuardMode {
     /// 取得記憶體使用上限（佔總記憶體比例）

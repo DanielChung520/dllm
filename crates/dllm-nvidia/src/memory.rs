@@ -2,7 +2,7 @@
 
 use tracing::warn;
 
-use dllm_shared::memory::{MemorySnapshot, SystemMemoryInfo};
+use dllm_shared::memory::SystemMemoryInfo;
 
 /// 透過 NVML 查詢 GPU 記憶體
 pub fn get_gpu_memory() -> Option<SystemMemoryInfo> {

@@ -2,7 +2,7 @@
 
 use futures::stream::BoxStream;
 use reqwest::Client;
-use tracing::{error, warn};
+use tracing::warn;
 
 use dllm_shared::{
     error::EngineError,

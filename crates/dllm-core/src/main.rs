@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use tracing::{info, warn};
 
 mod api;
+mod commands;
 mod config;
 mod engine_pool;
 mod memory;
@@ -58,6 +59,21 @@ enum Commands {
     },
     /// 診斷系統
     Diagnose,
+    /// 從 HuggingFace 下載模型
+    Pull {
+        /// HuggingFace repo ID（如 Qwen/Qwen2.5-0.5B-Instruct）
+        model: String,
+        /// 輸出目錄（預設 ~/.dllm/models/{model_name}）
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// 列出已下載模型
+    List,
+    /// 刪除已下載模型
+    Rm {
+        /// 模型名稱
+        model: String,
+    },
 }
 
 #[tokio::main]
@@ -67,9 +83,9 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Serve {
             port,
-            model_dir,
+            model_dir: _,
             config,
-            memory_guard,
+            memory_guard: _,
             log_level,
         } => {
             tracing_subscriber::fmt()
@@ -145,7 +161,21 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Diagnose => {
             println!("系統診斷...");
-            // TODO: 執行診斷
+        }
+        Commands::Pull { model, output } => {
+            commands::pull_model(&model, output).unwrap_or_else(|e| {
+                eprintln!("錯誤: {}", e);
+                std::process::exit(1);
+            });
+        }
+        Commands::List => {
+            commands::list_models();
+        }
+        Commands::Rm { model } => {
+            commands::remove_model(&model).unwrap_or_else(|e| {
+                eprintln!("錯誤: {}", e);
+                std::process::exit(1);
+            });
         }
     }
 

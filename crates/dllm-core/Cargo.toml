@@ -49,6 +49,7 @@ parking_lot = { workspace = true }
 walkdir = { workspace = true }
 dirs = { workspace = true }
 rand = { workspace = true }
+sha2 = { workspace = true }
 
 # Async utilities
 futures = { workspace = true }

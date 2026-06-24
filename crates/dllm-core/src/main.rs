@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use tracing::{info, warn};
 
 mod api;
+mod api_keys;
 mod commands;
 mod config;
 mod engine_pool;
@@ -74,6 +75,27 @@ enum Commands {
         /// 模型名稱
         model: String,
     },
+    /// 管理 API Key
+    Key {
+        #[command(subcommand)]
+        action: KeyAction,
+    },
+}
+
+#[derive(clap::Subcommand)]
+enum KeyAction {
+    /// 建立新的 API Key
+    Create {
+        /// Key 名稱/標籤
+        label: String,
+    },
+    /// 撤銷 API Key
+    Revoke {
+        /// Key 的 hash 值
+        hash: String,
+    },
+    /// 列出所有 API Key
+    List,
 }
 
 #[tokio::main]
@@ -176,6 +198,39 @@ async fn main() -> anyhow::Result<()> {
                 eprintln!("錯誤: {}", e);
                 std::process::exit(1);
             });
+        }
+        Commands::Key { action } => {
+            let store = api_keys::ApiKeyStore::new();
+            match action {
+                KeyAction::Create { label } => {
+                    let key = store.create_key(&label);
+                    println!("🔑 已建立 API Key:");
+                    println!("   Key: {}", key);
+                    println!("   標籤: {}", label);
+                    println!("⚠️  請立即儲存此 Key，建立後無法再次檢視。");
+                }
+                KeyAction::Revoke { hash } => {
+                    if store.revoke_key(&hash) {
+                        println!("✅ 已撤銷 Key: {}", hash);
+                    } else {
+                        eprintln!("❌ 找不到指定的 Key");
+                    }
+                }
+                KeyAction::List => {
+                    let keys = store.list_keys();
+                    if keys.is_empty() {
+                        println!("尚未建立任何 API Key");
+                    } else {
+                        println!("API Key 列表:");
+                        for (status, entry) in &keys {
+                            println!("  [{status}] {}", entry.label);
+                            println!("         Hash: {}", &entry.key_hash[..16]);
+                            println!("         建立: {}", &entry.created_at[..19]);
+                            println!();
+                        }
+                    }
+                }
+            }
         }
     }
 

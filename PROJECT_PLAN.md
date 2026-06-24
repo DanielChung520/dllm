@@ -49,9 +49,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  用戶界面層（User Interface）                                │
-│  ├── Web Admin Dashboard（React + TypeScript）              │
-│  ├── Desktop App（Tauri / Electron）                         │
-│  └── 第三方整合（OpenAI SDK, Claude Code, Cursor）           │
+│  └── OpenAI SDK / curl（客戶端任何 OpenAI-compatible 工具）  │
 ├─────────────────────────────────────────────────────────────┤
 │  控制平面層（Control Plane）— Rust 統一實現                   │
 │  ├── dllm-core: API Gateway (Axum), Engine Pool, LRU        │
@@ -65,9 +63,7 @@
 │  └── Tokenize: 請求前 token 計數 + 用量統計                  │
 ├─────────────────────────────────────────────────────────────┤
 │  資料與記憶層（Data Layer）                                   │
-│  ├── Qdrant（向量資料庫，Rust 原生）                          │
-│  ├── PostgreSQL + pgvector（結構化資料）                      │
-│  └── 本地檔案系統（模型權重、文件快取）                       │
+│  └── 本地檔案系統（模型權重、設定檔）                        │
 ├─────────────────────────────────────────────────────────────┤
 │  推理引擎層（Inference Runtime）                              │
 │  ├── Mac: MLX / Metal（透過 dllm-mac 調用）                   │
@@ -134,7 +130,7 @@ dllm/
 - [ ] Rust workspace 配置（Cargo.toml、條件編譯）
 - [ ] 共享類型與 trait 設計（dllm-shared）
 - [ ] CI/CD 基礎（GitHub Actions：build、test、lint）
-- [ ] 開發環境 Docker Compose（core + vLLM + Qdrant）
+- [ ] 開發環境 Docker Compose（core + vLLM）
 - [ ] 程式碼規範（rustfmt、clippy、pre-commit hooks）
 
 **交付物**：
@@ -365,8 +361,8 @@ dllm/
 | **本地推理** | ✅ | ✅ | 持平 |
 | **OpenAI API** | ✅ | ✅ | 持平 |
 | **中文支援** | 普通 | 最佳化（Qwen/BGE 原生中文） | **更強** |
-| **RAG 知識庫** | 無或需另購 | 內建 | **有優勢** |
-| **資料庫 Agent** | 無 | 規劃中 | **未來優勢** |
+| **多模型管理** | 無（一次一模型） | 常駐/熱/冷/備援 | **核心優勢** |
+| **硬體自動感知** | 無 | 64GB→保守 / 128GB→最佳 | **核心優勢** |
 | **混合雲** | 僅雲端 | 本地+雲端可混合 | **更靈活** |
 | **升級路徑** | 需更換方案 | 換硬體，軟體不變 | **無痛升級** |
 | **技術支援** | 原廠（英文） | 你（繁體中文） | **在地化支援** |
@@ -382,7 +378,7 @@ dllm/
 | API 延遲（TTFT） | < 3s（30B 模型） | 壓力測試 |
 | 並發用戶數 | > 4（64GB）/ > 8（128GB） | 負載測試 |
 | 記憶體保護命中率 | > 99%（無 OOM） | 長期監控 |
-| RAG 準確率 | > 80%（Top-3 召回） | 評測集 |
+| 模型載入時間（cold start） | < 15s（30B INT4） | 自動測試 |
 | 零接觸部署成功率 | > 95%（開機到可用） | OEM 出貨測試 |
 | 自動更新失敗復原率 | > 99%（自動回退） | 整合測試 |
 
@@ -413,8 +409,8 @@ dllm/
 - [oMLX](https://github.com/jundot/omlx) — Mac 本地 LLM 伺服器參考
 - [vLLM](https://github.com/vllm-project/vllm) — NVIDIA 推理引擎
 - [Atlas](https://github.com/Avarok-Cybersecurity/atlas) — DGX Spark 純 Rust 引擎
-- [Qdrant](https://github.com/qdrant/qdrant) — 向量資料庫
-- [MCP](https://modelcontextprotocol.io/) — 模型上下文協議
+- [Ollama](https://github.com/ollama/ollama) — 模型下載與管理參考
+- [llama-swap](https://github.com/mARTin-B78/dgx-spark_lite-llm_llama-swap_vllm_llama-cpp_ollama) — 動態模型切換參考
 
 ---
 

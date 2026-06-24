@@ -1,7 +1,6 @@
 version: "3.8"
 
 services:
-  # dllm 核心控制層
   dllm-core:
     build:
       context: .
@@ -10,47 +9,30 @@ services:
       - "11400:11400"
     volumes:
       - ./data/models:/models
-      - ./data/config:/config"
-      - ./data/logs:/logs"
+      - ./data/config:/config
+      - ./data/logs:/logs
     environment:
       - DLLM_CONFIG_PATH=/config/settings.toml
       - DLLM_MODEL_DIR=/models
       - RUST_LOG=info
-      - DLLM_RAG_URL=http://dllm-rag:8000
-      - DLLM_AGENT_URL=http://dllm-agent:8000
+      - VLLM_URL=http://vllm:8000
     depends_on:
-      - qdrant
-      - postgres
-      - redis
+      - vllm
     networks:
       - dllm-net
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11400/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
 
-  # vLLM 推理引擎
-  # DGX Spark 配置：4 個模型共 ~38GB，空間充裕
   vllm:
     image: vllm/vllm-openai:latest
     runtime: nvidia
     environment:
       - CUDA_VISIBLE_DEVICES=0
-      # 多模型場景，保留空間給多個引擎
       - GPU_MEMORY_UTILIZATION=0.80
-      # 30B MoE + 8B VLM 都夠用
       - MAX_MODEL_LEN=32768
-      # 多模型並發降低
       - MAX_NUM_SEQS=8
-      # 啟用 chunked prefill 降低記憶體峰值
-      - VLLM_CHUNKED_PREFILL_SIZE=2048
     volumes:
       - ./data/models:/models
     mem_limit: 96g
-    # 不暴露對外端口，由 dllm-core 透過內部網路調用
     networks:
       - dllm-net
     restart: unless-stopped
@@ -62,156 +44,6 @@ services:
               count: 1
               capabilities: [gpu]
 
-    # RAG 服務
-  dllm-rag:
-    build:
-      context: ./services/dllm-rag
-      dockerfile: ../../deploy/docker/Dockerfile.rag
-    environment:
-      - QDRANT_URL=http://qdrant:6333
-      - EMBEDDING_MODEL=BAAI/bge-m3
-      - CHUNK_SIZE=512
-      - CHUNK_OVERLAP=128
-      - TOP_K=5
-      - RERANK=true
-      - HYBRID_SEARCH=true
-    volumes:
-      - ./data/rag-models:/models
-      - ./data/documents:/documents
-    depends_on:
-      - qdrant
-    networks:
-      - dllm-net
-    restart: unless-stopped
-    mem_limit: 8g
-
-  # Agent 服務
-  dllm-agent:
-    build:
-      context: ./services/dllm-agent
-      dockerfile: ../../deploy/docker/Dockerfile.agent
-    environment:
-      - DLLM_CORE_URL=http://dllm-core:11400
-      - MAX_ITERATIONS=10
-      - TIMEOUT_SECONDS=300
-      - MCP_SERVERS_CONFIG=/config/mcp-servers.json
-    volumes:
-      - ./data/config:/config"
-    depends_on:
-      - dllm-core
-    networks:
-      - dllm-net
-    restart: unless-stopped
-    mem_limit: 4g
-
-  # 雲端連接器
-  dllm-connector:
-    build:
-      context: ./services/dllm-connector
-      dockerfile: ../../deploy/docker/Dockerfile.connector
-    environment:
-      - DLLM_CORE_URL=http://dllm-core:11400
-      - REDIS_URL=redis://redis:6379
-    depends_on:
-      - dllm-core
-      - redis
-    networks:
-      - dllm-net
-    restart: unless-stopped
-    mem_limit: 2g
-
-  # 管理後台
-  dllm-admin:
-    build:
-      context: ./admin/dllm-admin
-      dockerfile: ../../deploy/docker/Dockerfile.admin
-    ports:
-      - "11401:80"
-    depends_on:
-      - dllm-core
-    networks:
-      - dllm-net
-    restart: unless-stopped
-    mem_limit: 512m
-
-  # 向量資料庫
-  qdrant:
-    image: qdrant/qdrant:latest
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant-data:/qdrant/storage
-    networks:
-      - dllm-net
-    restart: unless-stopped
-    mem_limit: 8g
-
-  # 結構化資料庫
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      - POSTGRES_USER=dllm
-      - POSTGRES_PASSWORD=dllm
-      - POSTGRES_DB=dllm
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./deploy/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
-    networks:
-      - dllm-net
-    restart: unless-stopped
-    mem_limit: 2g
-
-  # 快取與訊息佇列
-  redis:
-    image: redis:7-alpine
-    volumes:
-      - redis-data:/data
-    networks:
-      - dllm-net
-    restart: unless-stopped
-    mem_limit: 1g
-
-  # Prometheus 監控（可選）
-  prometheus:
-    image: prom/prometheus:latest
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./deploy/docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus-data:/prometheus
-    networks:
-      - dllm-net
-    restart: unless-stopped
-    mem_limit: 2g
-    profiles:
-      - monitoring
-
-  # Grafana 儀表板（可選）
-  grafana:
-    image: grafana/grafana:latest
-    ports:
-      - "3000:3000"
-    volumes:
-      - ./deploy/docker/grafana/provisioning:/etc/grafana/provisioning
-      - grafana-data:/var/lib/grafana
-    networks:
-      - dllm-net
-    restart: unless-stopped
-    mem_limit: 512m
-    profiles:
-      - monitoring
-
-volumes:
-  qdrant-data:
-  postgres-data:
-  redis-data:
-  prometheus-data:
-  grafana-data:
-
 networks:
   dllm-net:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16

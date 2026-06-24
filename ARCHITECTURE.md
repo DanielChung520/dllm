@@ -23,7 +23,7 @@
 總計: 128GB 統一記憶體
 ├── 系統保留 (Linux, Docker): ~12GB
 ├── Rust 控制層: ~0.5GB
-├── 向量資料庫 (Qdrant): ~2-4GB
+├── 系統服務 (PostgreSQL): ~1GB
 ├── 結構化資料庫 (PostgreSQL): ~1GB
 ├── 快取 (Redis): ~0.5GB
 ├── Tokenizer / 日誌服務: ~1-2GB
@@ -95,7 +95,7 @@
 │  │  └── WebSocket（串流、監控）                                   │    │
 │  ├─────────────────────────────────────────────────────────────┤    │
 │  │  Business Logic Layer                                        │    │
-│  │  ├── Request Router（請求分發到 Engine / RAG / Agent）       │    │
+│  │  ├── Request Router（請求分發到對應 Engine）                 │    │
 │  │  ├── Engine Pool（多模型 LRU + TTL + Pin）                   │    │
 │  │  ├── Memory Enforcer（記憶體壓力監控與自動卸載）              │    │
 │  │  ├── Model Discovery（啟動時掃描、動態註冊）                  │    │
@@ -125,7 +125,7 @@
 ┌─────────────────────────────────────────────────────────────────────┐
 │                      Service Layer（Docker / 子進程）                 │
 │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐   │
-│  │    dllm-rag      │  │   dllm-agent     │  │ dllm-connector   │   │
+│  │    dllm-nvidia   │  │   dllm-mac       │  │（平台適配層）   │   │
 │  │  （Python/Rust）  │  │  （Python/Rust）  │  │    （Rust）       │   │
 │  │                  │  │                  │  │                  │   │
 │  │  文件解析         │  │  工具註冊         │  │  雲端 LLM 連接   │   │
@@ -139,7 +139,7 @@
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        Data Layer                                    │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
-│  │   Qdrant     │  │  PostgreSQL  │  │   Local FS   │              │
+│  │   PostgreSQL │  │   Local FS   │              │
 │  │  向量資料庫   │  │  + pgvector  │  │  模型/文件   │              │
 │  └──────────────┘  └──────────────┘  └──────────────┘              │
 └─────────────────────────────────────────────────────────────────────┘
@@ -190,15 +190,14 @@ Client Request
          ▼
 ┌─────────────────┐
 │ Request Parser  │ ──▶ 解析 model 欄位
-│                 │ ──▶ 辨識請求類型（Chat / RAG / Agent）
+│                 │ ──▶ 解析 model 欄位，決定目標引擎
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│  Router Logic   │ ──▶ RAG 請求？→ 轉發 dllm-rag
-│                 │ ──▶ Agent 請求？→ 轉發 dllm-agent
-│                 │ ──▶ Cloud 路由？→ 轉發 dllm-connector
-│                 │ ──▶ 本地模型？→ Engine Pool
+│  Engine Pool    │ ──▶ 模型已載入？→ 直接路由
+│                 │ ──▶ 模型未載入？→ load_model() + LRU eviction
+│                 │ ──▶ 記憶體不足？→ 返回 503
 └────────┬────────┘
          │
          ▼
@@ -385,8 +384,7 @@ nvidia = ["dllm-nvidia"]
 mac = ["dllm-mac"]
 
 # 功能選項
-rag = []
-agent = []
+# 核心功能（無需 feature flag）
 cloud = ["dllm-connector"]
 admin = []
 
@@ -394,7 +392,7 @@ admin = []
 dllm-shared = { path = "../dllm-shared" }
 dllm-nvidia = { path = "../dllm-nvidia", optional = true }
 dllm-mac = { path = "../dllm-mac", optional = true }
-dllm-connector = { path = "../../services/dllm-connector", optional = true }
+# 僅有 dllm-shared（核心類型）、dllm-nvidia（NVIDIA）、dllm-mac（Mac）
 ```
 
 ```rust
@@ -583,43 +581,19 @@ version: "3.8"
 services:
   dllm-core:
     build:
-      context: ./crates/dllm-core
-      dockerfile: ../../deploy/docker/Dockerfile.core
+      context: .
+      dockerfile: deploy/docker/Dockerfile.core
     ports:
       - "11400:11400"
     volumes:
       - ./data/models:/models
-      - ./data/config:/config"
+      - ./data/config:/config
     environment:
       - DLLM_CONFIG_PATH=/config/settings.toml
       - DLLM_MODEL_DIR=/models
       - RUST_LOG=info
     depends_on:
-      - qdrant
-      - postgres
-    networks:
-      - dllm-net
-
-  dllm-rag:
-    build:
-      context: ./services/dllm-rag
-      dockerfile: ../../deploy/docker/Dockerfile.rag
-    environment:
-      - QDRANT_URL=http://qdrant:6333
-      - EMBEDDING_MODEL=BAAI/bge-m3
-    depends_on:
-      - qdrant
-    networks:
-      - dllm-net
-
-  dllm-agent:
-    build:
-      context: ./services/dllm-agent
-      dockerfile: ../../deploy/docker/Dockerfile.agent
-    environment:
-      - DLLM_CORE_URL=http://dllm-core:11400
-    depends_on:
-      - dllm-core
+      - vllm
     networks:
       - dllm-net
 
@@ -628,47 +602,12 @@ services:
     runtime: nvidia
     environment:
       - CUDA_VISIBLE_DEVICES=0
-      - GPU_MEMORY_UTILIZATION=0.85
+      - GPU_MEMORY_UTILIZATION=0.80
+      - MAX_MODEL_LEN=32768
     volumes:
       - ./data/models:/models
-    # 不暴露對外端口，由 dllm-core 透過內部網路調用
     networks:
       - dllm-net
-
-  qdrant:
-    image: qdrant/qdrant:latest
-    ports:
-      - "6333:6333"
-    volumes:
-      - qdrant-data:/qdrant/storage
-    networks:
-      - dllm-net
-
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      - POSTGRES_USER=dllm
-      - POSTGRES_PASSWORD=dllm
-      - POSTGRES_DB=dllm
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - dllm-net
-
-  admin:
-    build:
-      context: ./admin/dllm-admin
-      dockerfile: ../../deploy/docker/Dockerfile.admin
-    ports:
-      - "11401:80"
-    depends_on:
-      - dllm-core
-    networks:
-      - dllm-net
-
-volumes:
-  qdrant-data:
-  postgres-data:
 
 networks:
   dllm-net:

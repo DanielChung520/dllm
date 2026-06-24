@@ -35,18 +35,10 @@ pub async fn handler() -> Html<String> {
         <span class="method">POST</span> /v1/embeddings
     </div>
     
-    <h2>RAG API</h2>
-    <div class="endpoint">
-        <span class="method">POST</span> /v1/rag/knowledge-bases
-    </div>
     <div class="endpoint">
         <span class="method">POST</span> /v1/rag/query
     </div>
     
-    <h2>Agent API</h2>
-    <div class="endpoint">
-        <span class="method">POST</span> /v1/agent/run
-    </div>
     <div class="endpoint">
         <span class="method">GET</span> /v1/agent/tools
     </div>

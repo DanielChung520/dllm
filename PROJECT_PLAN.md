@@ -13,31 +13,30 @@
 
 隨著 GB-10（NVIDIA Grace Blackwell）內核設備的興起，以及 Apple Silicon Mac 的普及，邊緣端運行大型語言模型已從實驗走向實用。然而，現有方案存在明顯斷層：
 
-- **Ollama / LM Studio**：面向個人開發者，缺乏企業級管理與 RAG 整合
-- **vLLM**：面向雲端資料中心，單一進程單一模型，缺乏邊緣端的多模型動態管理
+- **Ollama / LM Studio**：面向個人開發者，缺乏多模型管理、無企業級功能
+- **vLLM**：單一進程單一模型，無模型下載管理、無多模型動態管理
 - **oMLX**：Mac 專屬，NVIDIA 生態無法直接使用
-- **Dify / LangChain**：需自備雲端資源，非本地化硬體方案
 
-中小企業需要的是一台**開箱即用、資料不離境、可漸進式上雲**的 AI 設備。
+中小企業需要的是一台**插電即用、可集中管理 LLM 推理**的 AI 設備。
 
 ### 1.2 產品定義
 
-**dllm**（Distributed Local LLM Manager）是一套跨平台統一 LLM 執行環境，專為中小企業 AI Box 設計：
+**dllm** 是一套跨平台 LLM 執行環境，專為中小企業 AI Box 設計：
 
 - **統一 API**：所有平台皆暴露相同的 OpenAI-compatible API（Port 11400）
-- **跨平台**：Mac（MLX/Metal）+ NVIDIA（CUDA/GB-10/RTX）+ 未來消費級
-- **多模型動態管理**：Engine Pool + LRU eviction，記憶體不足自動卸載
-- **內建 RAG**：本地知識庫處理，文件上傳即問即答
-- **資料庫 Agent**：NL2SQL，連接企業現有資料庫
-- **工具生態**：MCP 整合，可接第三方工具
-- **混合雲路由**：本地優先，雲端為輔，預算可控
+- **模型管理**：`dllm pull` / `dllm list` / `dllm rm`，像 Ollama 一樣直覺
+- **多模型載入策略**：常駐（pinned）、熱載入（hot）、冷載入（cold）、備援（standby）
+- **跨平台**：Mac（MLX）+ NVIDIA（CUDA/GB-10/RTX/H100）
+- **硬體自動感知**：64GB Mac Mini 自動保守配置，128GB DGX Spark 自動最佳化
+- **安全審計**：API Key 管理 + 請求日誌
+- **License 驗證**：離線 RSA 簽章，支援月租商業模式
 
 ### 1.3 目標市場
 
 | 市場區隔 | 場景 | 硬體建議 | 模型上限 |
 |---------|------|---------|---------|
-| **小型企業**（10-50人）| 內部知識庫問答、文件處理 | GB-10（128GB 統一記憶體） | 1x 70B INT4 + Embedding |
-| **中型企業**（50-200人）| 多部門知識庫、資料庫查詢、自動化流程 | 多台 GB-10 或單台 H100 | 1x 122B+ 或 多機 |
+| **小型企業**（10-50人）| 私有 LLM 推理、企業內部使用 | GB-10（128GB 統一記憶體） | 1x 30B + 1x 8B |
+| **中型企業**（50-200人）| 多團隊共享推理服務 | 多台 GB-10 或單台 H100 | 多機負載均衡 |
 | **專業工作室** | 設計、法律、顧問等專業領域 | Mac Studio / GB-10 | Mac: 1x 122B+ |
 | **消費級進階用戶** | 個人知識管理、AI 助理 | RTX 5090 / MacBook Pro | 1x 8-13B |
 
@@ -60,10 +59,10 @@
 │  ├── dllm-nvidia: NVIDIA 後端適配（條件編譯）                │
 │  └── dllm-mac: Mac MLX 後端適配（條件編譯）                  │
 ├─────────────────────────────────────────────────────────────┤
-│  AI 核心引擎層（AI Engine）                                   │
-│  ├── dllm-rag: 文件處理、Embedding、向量檢索                 │
-│  ├── dllm-agent: 工具調用、MCP、ReAct Agent                  │
-│  └── dllm-connector: 雲端 LLM 連接與路由                    │
+│  模型管理層（Model Management）                               │
+│  ├── dllm pull/list/rm: HuggingFace 模型下載與管理           │
+│  ├── Engine Profile: 常駐/熱載入/冷載入/備援策略             │
+│  └── Tokenize: 請求前 token 計數 + 用量統計                  │
 ├─────────────────────────────────────────────────────────────┤
 │  資料與記憶層（Data Layer）                                   │
 │  ├── Qdrant（向量資料庫，Rust 原生）                          │
@@ -87,7 +86,7 @@
 
 1. **統一介面，異構實現**：API 層 100% 統一，底層按平台適配
 2. **單一二進位**：Rust 控制層編譯為單一可執行檔，部署極簡
-3. **容器化後端**：vLLM / RAG / 向量資料庫以 Docker 運行，版本可控
+3. **容器化後端**：vLLM 以 Docker 運行，版本可控
 4. **插件化引擎**：推理引擎透過 trait 抽象，未來可無縫替換
 5. **資料不離境**：本地推理為預設，雲端連接需明確授權
 
@@ -100,27 +99,17 @@
 ```
 dllm/
 ├── crates/                     # Rust 工作區（核心控制層）
-│   ├── dllm-core/              # API Gateway + Engine Pool + 模型管理
+│   ├── dllm-core/              # API + Engine Pool + 模型管理 + CLI
 │   ├── dllm-shared/            # 共享類型、trait、錯誤處理、序列化
 │   ├── dllm-nvidia/            # NVIDIA 後端：vLLM 進程管理、CUDA 監控
 │   └── dllm-mac/               # Mac 後端：MLX 調用、Metal 記憶體監控
-├── services/                   # 服務層（獨立容器或子進程）
-│   ├── dllm-rag/               # RAG Pipeline（文件處理、Embedding、檢索）
-│   ├── dllm-agent/             # Agent Core（工具調用、MCP、工作流）
-│   └── dllm-connector/         # 雲端連接器（OpenAI/Claude/通義路由）
-├── admin/                      # 管理後台
-│   └── dllm-admin/             # Web UI（React + TypeScript + Vite）
 ├── deploy/                     # 部署與維運
-│   ├── docker/                 # Docker Compose、Dockerfile
+│   ├── docker/                 # Dockerfile
 │   ├── systemd/                # systemd service 檔案
 │   └── oem/                    # OEM 預裝腳本、首次開機設定
 ├── docs/                       # 文件
-│   ├── api/                    # API 規格
-│   ├── architecture/           # 架構設計文件
-│   └── deployment/             # 部署指南
 ├── Makefile                    # 統一構建入口
 ├── Cargo.toml                  # Rust workspace 定義
-├── docker-compose.yml          # 開發環境快速啟動
 └── PROJECT_PLAN.md             # 本文件
 ```
 
@@ -128,14 +117,10 @@ dllm/
 
 | 倉庫 | 語言 | 職責 | 部署方式 |
 |------|------|------|---------|
-| `dllm-core` | Rust | HTTP API、請求路由、Engine Pool、LRU、記憶體監控、模型發現 | 單一二進位 |
-| `dllm-shared` | Rust | 類型定義、trait、序列化、錯誤處理、配置解析 | 函式庫 |
-| `dllm-nvidia` | Rust | vLLM 子進程生命周期管理、CUDA VRAM 監控、GPU 健康檢查 | 條件編譯 |
-| `dllm-mac` | Rust | MLX 引擎調用、Metal 記憶體監控、Mac 平台適配 | 條件編譯 |
-| `dllm-rag` | Python/Rust | 文件解析、OCR、Embedding、向量索引、混合檢索 | Docker 容器 |
-| `dllm-agent` | Python/Rust | 工具註冊、MCP client、ReAct loop、工作流引擎 | Docker 容器 |
-| `dllm-connector` | Rust | 雲端 LLM 連接池、請求轉換、計費追蹤 | 內嵌於 core |
-| `dllm-admin` | TS/React | 模型管理、知識庫管理、監控面板、系統設定 | 靜態網站 |
+| `dllm-core` | Rust | HTTP API、Engine Pool、`dllm pull/list/rm`、CLI | 單一二進位 |
+| `dllm-shared` | Rust | 類型定義、trait、序列化、錯誤處理、配置、License | 函式庫 |
+| `dllm-nvidia` | Rust | vLLM 子進程管理、CUDA VRAM 監控、GPU 健康檢查 | 條件編譯 |
+| `dllm-mac` | Rust | MLX 引擎調用、Metal 記憶體監控 | 條件編譯 |
 
 ---
 
@@ -176,72 +161,72 @@ dllm/
 - `curl http://localhost:11400/v1/chat/completions` 成功對話
 - Mac 與 NVIDIA 兩平台編譯通過
 
-### Phase 2：RAG + 零接觸部署（第 7-10 週）
+### Phase 2：模型下載與管理（第 7-10 週）
 
-**目標**：文件上傳即可問答，設備開箱即用
+**目標**：`dllm pull` / `dllm list` / `dllm rm` 完整 CLI，像 Ollama 一樣管理模型
 
-- [ ] dllm-rag：文件解析（PDF、Word、Excel、Markdown）
-- [ ] dllm-rag：Embedding 模型整合（BGE-M3）
-- [ ] dllm-rag：向量索引（Qdrant 整合）
-- [ ] dllm-rag：混合檢索（向量 + BM25 + 重排序）
-- [ ] dllm-core：RAG API 擴展（`/v1/rag/upload`、`/v1/rag/query`）
+- [ ] dllm-core：`dllm pull <model>` HuggingFace 模型下載（HF / GGUF）
+- [ ] dllm-core：`dllm list` 列出已下載模型（量化、大小、context）
+- [ ] dllm-core：`dllm rm <model>` 刪除模型
+- [ ] dllm-core：`dllm info <model>` 顯示模型詳情
+- [ ] dllm-shared：模型目錄管理（`~/.dllm/models/` 結構）
+- [ ] dllm-shared：模型 metadata 快取（config.json 解析 + 記憶體估算）
 - [ ] OEM：首次開機精靈（硬體檢測、模型下載、License 啟動）
-- [ ] OEM：零接觸部署腳本
-- [ ] dllm-admin MVP：設備狀態、模型管理
 
 **交付物**：
-- 開機 → 連網 → 自動下載模型 → 可問答（全程無命令列）
-- 上傳 PDF 後可問答，附來源出處
-- 支援中英文混合文件
+- `dllm pull Qwen/Qwen3-Coder-30B-A3B-Instruct` 一鍵下載
+- `dllm list` 顯示已下載模型與狀態
+- 模型資訊快取，重啟不遺失
 
-### Phase 3：Agent + 遠端管理（第 11-14 週）
+### Phase 3：多模型載入策略（第 11-14 週）
 
-**目標**：客戶能查資料庫、發郵件；你能遠端管理所有設備
+**目標**：常駐 / 熱載入 / 冷載入 / 備援 四種模型策略
 
-- [ ] dllm-agent：工具註冊與發現系統
-- [ ] dllm-agent：MCP client + 內建工具（資料庫查詢、郵件）
-- [ ] dllm-agent：ReAct Agent loop
-- [ ] dllm-connector：雲端 LLM 路由（OpenAI / Claude / 通義）
-- [ ] dllm-connector：計費追蹤與預算上限
-- [ ] **遠端管理後台**：設備清單、心跳狀態、License 管理
-- [ ] **遠端管理後台**：使用量統計（月活躍用戶、請求數）
-- [ ] **OTA 自動更新**：差分更新、簽章驗證、藍綠部署
-
-**交付物**：
-- Agent 可查詢客戶資料庫並回答
-- 你的後台可查看 100 台設備的在線狀態
-- 批次推送更新，失敗自動回退
-
-### Phase 4：硬體回收 + Admin UX（第 15-18 週）
-
-**目標**：完整產品閉環，支援硬體回收與重新部署
-
-- [ ] 一鍵恢復出廠設定（secure_wipe.sh）
-- [ ] License 與設備綁定，換設備需重新啟用
-- [ ] dllm-admin：知識庫管理、監控面板、用戶管理
-- [ ] dllm-admin：多語言支援（繁中、簡中、英文、日文）
-- [ ] 客戶資料加密備份（可選雲端）
-- [ ] 效能優化：請求批次合併、KV Cache 共享
-- [ ] 安全強化：API Key 管理、請求限流
+- [ ] dllm-core：常駐（pinned）— 開機載入，永不被 evict
+- [ ] dllm-core：熱載入（hot）— 預載未使用，保持 warm
+- [ ] dllm-core：冷載入（cold）— 按需載入，首次較慢
+- [ ] dllm-core：備援（standby）— 主力模型忙碌時自動切換至降級模型
+- [ ] dllm-core：Engine Pool 策略排程器（依據記憶體壓力自動調整）
+- [ ] dllm-core：vLLM subprocess 管理（啟動/停止/健康檢查/重啟）
+- [ ] dllm-core：Token 計算（tiktoken 整合，請求前計數 + 用量統計）
 
 **交付物**：
-- 退租設備 30 分鐘內可重新部署給下一客戶
-- Web Admin 可完成 90% 操作
-- 首次開機到可用 < 30 分鐘
+- 設定 `pinned = ["qwen3-coder"]`，開機自動載入，永不卸載
+- 設定 `hot = ["qwen2.5-vl"]`，記憶體足夠時預載
+- 設定 `cold = ["mixtral"]`，按需載入
+- 設定 `standby = ["qwen3.5-0.8b"]`，主模型忙碌時自動降級
+- `/v1/tokenize` 端點可計算 prompt token 數
 
-### Phase 5：企業升級路徑（第 19-24 週）
+### Phase 4：安全審計 + 企業功能（第 15-18 週）
 
-**目標**：當客戶成長到 50+ 人時，可無痛遷移到更大硬體
+**目標**：API Key 管理、請求審計、License 綁定
 
-- [ ] 消費級適配：RTX 5090 輕量版、MacBook 版
-- [ ] 高可用模式：多節點負載均衡
-- [ ] SSO / LDAP 整合
-- [ ] 審計日誌（誰問了什麼、用了什麼模型）
-- [ ] 叢集模式：K8s operator
+- [ ] dllm-core：API Key 管理（建立 / 撤銷 / 權限）
+- [ ] dllm-core：請求審計日誌（誰、何時、哪個模型、token 用量）
+- [ ] dllm-core：請求限流（per-key rate limit）
+- [ ] dllm-core：License 設備綁定 + 到期自動降級
+- [ ] dllm-core：硬體回收腳本（secure_wipe + 出廠重置）
+- [ ] dllm-core：簡易 Admin API（`GET /v1/admin/stats` 用量統計）
 
 **交付物**：
-- 客戶從 64GB Mac Mini 遷移到 H100 叢集，API 與設定不變
-- 消費級版可 NT$ 1,000-2,000/月（個人方案）
+- 每個客戶獨立 API Key，可撤銷
+- 完整審計日誌，可追蹤每個請求
+- License 過期自動停用推理，保留管理 API
+
+### Phase 5：效優化 + 跨平台（第 19-24 週）
+
+**目標**：極致效能、Mac 支援、消費級擴展
+
+- [ ] dllm-nvidia：多實例 vLLM GPU 記憶體共享與隔離優化
+- [ ] dllm-mac：MLX 引擎實作（條件編譯，Mac Mini 原生運行）
+- [ ] 消費級適配：RTX 5090 輕量版、16-32GB 設備支援
+- [ ] SSD KV Cache：評估階段（確認何時需要實作）
+- [ ] 高可用模式：多節點負載均衡（企業客戶升級路徑）
+
+**交付物**：
+- Mac Mini 原生運行（無 Docker）
+- NVIDIA + Mac 雙平台同一 binary 條件編譯
+- 消費級設備模型載入策略指南
 
 ---
 
@@ -279,35 +264,20 @@ dllm/
 | 溝通方式 | 直接 FFI / Python subprocess | mlx-lm 為 Python 庫 |
 | 記憶體監控 | system-monitoring | macOS 系統 API |
 
-### 5.4 RAG 管道
+### 5.4 Token 計算
 
 | 元件 | 選型 | 理由 |
 |------|------|------|
-| 文件解析 | unstructured / marker | 支援多格式、版面分析 |
-| OCR | surya / easyocr | 開源、多語言 |
-| Embedding | sentence-transformers / BGE | 中文效果最佳 |
-| 向量資料庫 | Qdrant | Rust 原生、輕量、無 JVM |
-| 重排序 | BGE-Reranker | 提升檢索準確率 |
+| tokenizer | tiktoken / tokenizers | OpenAI 相容、多語言 |
+| 整合方式 | Rust binding (tiktoken-rs) | 無需 Python runtime |
 
-### 5.5 Agent 與工具
+### 5.5 安全審計
 
 | 元件 | 選型 | 理由 |
 |------|------|------|
-| MCP client | 官方 SDK (Python) | MCP 為標準協議 |
-| 工具調用 | 自研 + LangChain 參考 | 輕量、可控 |
-| 資料庫連接 | SQLAlchemy + asyncpg | Python async DB |
-| 郵件 | lettre (Rust) / yagmail (Python) | 依場景選擇 |
-
-### 5.6 管理後台
-
-| 元件 | 選型 | 理由 |
-|------|------|------|
-| 框架 | React 19 + TypeScript | 生態最大 |
-| 構建 | Vite | 快速、現代 |
-| UI 元件 | shadcn/ui + Tailwind CSS | 美觀、可客製 |
-| 狀態管理 | Zustand | 輕量、TypeScript 友好 |
-| 圖表 | Recharts / Tremor | 監控面板 |
-| 桌面封裝 | Tauri (Rust) | 輕量、安全、與 Rust 後端天然整合 |
+| API Key 管理 | 自研（sqlite + sha256） | 輕量、無外部依賴 |
+| 請求日誌 | tracing + file rotate | 與現有日誌系統整合 |
+| 限流 | tower-governor | 整合 Axum 中間件 |
 
 ---
 
@@ -318,12 +288,12 @@ dllm/
 | **硬體物流成本**（寄送/回收） | 中 | 毛利侵蝕 | 硬體折舊 3 年攤提；回收設備重新部署；快遞費談企業合約 |
 | **客戶欠費 / 不歸還設備** | 中 | 硬體損失 | 簽訂設備借用合約；軟體 License 綁定訂閱狀態，過期自動停用；可選遠端鎖定 |
 | **License 被破解** | 低 | 收入損失 | 核心控制層用 Rust 編譯，增加逆向難度；定期更換驗證邏輯 |
-| **支援成本過高** | 中 | 毛利侵蝕 | 零接觸部署降低支援量；遠端診斷減少到場服務；建立知識庫自助排解 |
+| **支援成本過高** | 中 | 毛利侵蝕 | 零接觸部署降低支援量；遠端診斷減少到場服務 |
 | **vLLM subprocess 啟動過慢** | 中 | 首次請求延遲高 | 預載 pinned models；非固定模型提示用戶「首次載入中」 |
 | **GPU VRAM 無法動態共享** | 高 | 多模型切換受限 | 積極 eviction + 記憶體估算；產品定位明確為「邊緣設備」 |
 | **硬體供應鏈波動** | 中 | 無法出貨 | 支援多硬體平台（Mac Mini / DGX Spark / ASUS / 銘凡），不依賴單一供應商 |
-| **客戶資料遺失** | 中 | 法律責任 | 內建定期本地備份；可選雲端備份（加密）；服務條款明確責任歸屬 |
-| **競品（Google/Apple）降價** | 低 | 價格壓力 | 差異化在「在地化支援 + RAG + Agent」而非單純硬體；客戶轉換成本高 |
+| **客戶資料遺失** | 中 | 法律責任 | 服務條款明確責任歸屬；客戶資料自行管理 |
+| **競品（Google/Apple）降價** | 低 | 價格壓力 | 差異化在「在地化支援 + 多模型管理 + License 綁定硬體」；客戶轉換成本高 |
 
 ---
 
@@ -353,7 +323,7 @@ dllm/
 | **遠端管理** | 可遠端監控設備健康狀態、用量統計 | 🔴 高 |
 | **License 驗證** | 軟體綁定訂閱狀態，過期自動降級或鎖定 | 🔴 高 |
 | **自動更新** | OTA 推送更新，客戶無需手動操作 | 🟡 中 |
-| **資料備份** | 客戶知識庫可遠端備份（可選） | 🟡 中 |
+| **硬體回收** | 退租設備可重置並重新部署 | 🟡 中 |
 | **使用分析** | 匿名用量統計，輔助產品決策 | 🟢 低 |
 | **硬體偵測** | 自動識別 Mac Mini / DGX Spark / 其他 GB-10 設備 | 🔴 最高 |
 

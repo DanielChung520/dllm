@@ -4,17 +4,16 @@
 
 ## 專案概述
 
-**dllm**（Distributed Local LLM Manager）是一套專為中小企業設計的本地化 AI 執行環境。軟體租用（NTD 10,000/月）包含一台預裝好的設備，客戶插電即可使用本地 LLM、知識庫與資料庫 Agent，同時保持與 OpenAI 完全相容的 API 格式。
+**dllm**（Distributed Local LLM Manager）是一套專為中小企業設計的本地化 LLM 執行環境。軟體租用（NTD 10,000/月）包含一台預裝好的設備，客戶插電即可使用本地 LLM，保持與 OpenAI 完全相容的 API 格式。
 
 ## 核心特性
 
 - **統一 API**：所有平台皆暴露相同的 OpenAI-compatible API（Port 11400）
 - **跨平台**：Mac（MLX/Metal）+ NVIDIA（CUDA/GB-10/RTX/H100）
-- **多模型動態管理**：Engine Pool + LRU eviction，記憶體不足自動卸載
-- **內建 RAG**：本地知識庫處理，文件上傳即問即答
-- **資料庫 Agent**：NL2SQL，連接企業現有資料庫
-- **工具生態**：MCP 整合，可接第三方工具
-- **混合雲路由**：本地優先，雲端為輔，預算可控
+- **模型管理**：`dllm pull` / `dllm list` / `dllm rm`，像 Ollama 一樣管理模型
+- **多模型載入策略**：常駐（pinned）、熱載入（hot）、冷載入（cold）、備援（standby）
+- **硬體自動感知**：Mac Mini 64GB 自動保守配置，DGX Spark 128GB 自動最佳化
+- **安全審計**：API Key 管理 + 完整請求日誌
 
 ## 硬體選擇指南
 
@@ -28,17 +27,15 @@
 | **部署方式** | 原生 CLI | Docker |
 | **價格帶** | $2,500-3,000 | $4,000-5,000 |
 
-**4 個模型共 ~38GB，兩台都能跑：**
+**2 個主力模型共 ~27GB，兩台都能跑：**
 
 | 模型 | 用途 | 記憶體 |
 |------|------|--------|
-| Qwen3-Coder-30B-A3B | 程式開發、問答（主力） | ~26GB |
-| Qwen2.5-VL-8B | 圖片辨識 | ~9GB |
-| BGE-M3 | RAG 嵌入檢索 | ~2GB |
-| Qwen3.5-0.8B | 備用降載 | ~1GB |
+| Qwen3-Coder-30B-A3B | 主力模型（程式開發、企業問答） | ~18GB |
+| Qwen2.5-VL-8B | 多模態備用模型 | ~5GB |
 
-- **64GB Mac Mini**：~2GB 緩衝，剛好夠用，適合 2-3 人小型團隊
-- **128GB DGX Spark**：~70GB 緩衝，非常充裕，適合 4-8 人中型團隊
+- **64GB Mac Mini**：適合 2-3 人小型團隊
+- **128GB DGX Spark**：適合 4-8 人中型團隊
 
 詳見 [硬體規格指南](docs/deployment/GB10_128GB.md)
 
@@ -46,25 +43,16 @@
 
 ```
 dllm/
-├── crates/              # Rust 核心控制層
+├── crates/              # Rust 核心
 │   ├── dllm-shared/     # 共享類型與 trait
-│   ├── dllm-core/       # API Gateway + Engine Pool
-│   ├── dllm-nvidia/     # NVIDIA 後端適配
-│   └── dllm-mac/        # Mac MLX 後端適配
-├── services/            # 服務層（Docker）
-│   ├── dllm-rag/        # RAG Pipeline
-│   ├── dllm-agent/      # Agent Core
-│   └── dllm-connector/  # 雲端連接器
-├── admin/               # 管理後台
-│   └── dllm-admin/      # Web UI
+│   ├── dllm-core/       # API + Engine Pool + CLI
+│   ├── dllm-nvidia/     # NVIDIA 後端（vLLM）
+│   └── dllm-mac/        # Mac 後端（MLX）
 ├── deploy/              # 部署腳本
 │   ├── docker/
 │   ├── systemd/
 │   └── oem/
 └── docs/                # 文件
-    ├── api/
-    ├── architecture/
-    └── deployment/
 ```
 
 ## 快速開始

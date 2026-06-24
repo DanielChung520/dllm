@@ -26,8 +26,7 @@
 ├── 向量資料庫 (Qdrant): ~2-4GB
 ├── 結構化資料庫 (PostgreSQL): ~1GB
 ├── 快取 (Redis): ~0.5GB
-├── RAG 服務 (Embedding): ~4-8GB
-├── Agent 服務: ~1-2GB
+├── Tokenizer / 日誌服務: ~1-2GB
 └── 可用於 LLM 推理: ~100-105GB
 ```
 
@@ -47,7 +46,7 @@
 |------|------|--------|
 | Qwen3-Coder-30B-A3B | 程式開發、問答（主力） | ~26GB |
 | Qwen2.5-VL-8B | 圖片辨識 | ~9GB |
-| BGE-M3 / Embedding | RAG 嵌入檢索 | ~2GB |
+| BGE-M3 / Embedding | 向量嵌入 | ~2GB |
 | Qwen3.5-0.8B | 備用降載 | ~1GB |
 
 ### 記憶體分配對比
@@ -90,8 +89,8 @@
 │  │  API Layer（Axum）                                           │    │
 │  │  ├── OpenAI-compatible 路由（/v1/chat/completions）           │    │
 │  │  ├── Anthropic-compatible 路由（/v1/messages）                │    │
-│  │  ├── RAG 路由（/v1/rag/*）                                    │    │
-│  │  ├── Agent 路由（/v1/agent/*）                                │    │
+│  │  ├── Tokenize 路由（/v1/tokenize）                            │    │
+│  │  ├── Admin 路由（/v1/admin/*）                                │    │
 │  │  ├── 管理路由（/admin/*、/v1/models、/health）                │    │
 │  │  └── WebSocket（串流、監控）                                   │    │
 │  ├─────────────────────────────────────────────────────────────┤    │
@@ -463,178 +462,56 @@ dllm-mac/
 
 ---
 
-## 五、RAG 架構設計
+---
 
-### 5.1 RAG Pipeline
+## 五、Token 計算
+
+### 5.1 Token 計數
+
+請求前 token 計數，避免超出模型上限：
+
+```rust
+/// Token 計數器
+pub trait TokenCounter: Send + Sync {
+    /// 計算 prompt 的 token 數量
+    fn count_tokens(&self, model: &str, messages: &[ChatMessage]) -> Result<usize>;
+    
+    /// 計算文字的 token 數量
+    fn count_text(&self, text: &str) -> usize;
+    
+    /// 估算生長的 token 數量
+    fn estimate_completion_tokens(&self, model: &str, prompt_tokens: usize) -> usize;
+}
+```
+
+### 5.2 用量統計
 
 ```
-文件上傳
+API 請求
     │
     ▼
 ┌─────────────────┐
-│  Document       │ ──▶ 格式偵測（PDF / DOCX / XLSX / TXT / MD）
-│  Ingestion      │ ──▶ OCR（若需要）
-│                 │ ──▶ 文本提取 + 版面分析
+│  Token Counter  │ ──▶ 請求前計算 prompt tokens
+│                 │ ──▶ 檢查是否超出 max_tokens
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│  Text Splitter  │ ──▶ 語義分塊（Semantic Chunking）
-│                 │ ──▶ 重疊窗口（Overlap）
+│  Engine         │ ──▶ 推理完成後回傳用量
+│  (vLLM)         │ ──▶ usage.prompt_tokens
+│                 │ ──▶ usage.completion_tokens
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│  Embedding      │ ──▶ BGE-M3 / multilingual-e5
-│  Model          │ ──▶ sparse + dense 雙向量
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  Vector Store   │ ──▶ Qdrant 儲存
-│  (Qdrant)       │ ──▶ 集合（Collection）按知識庫區分
+│  Audit Log      │ ──▶ 記錄每筆請求用量
+│                 │ ──▶ 可匯出統計報表
 └─────────────────┘
-
-查詢流程：
-用戶 Query
-    │
-    ▼
-┌─────────────────┐
-│  Query          │ ──▶ Query 改寫 / 擴展
-│  Preprocessing  │ ──▶ 意圖分類（是否需檢索）
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  Hybrid Search  │ ──▶ Dense Retrieval（向量相似度）
-│                 │ ──▶ Sparse Retrieval（BM25 / SPLADE）
-│                 │ ──▶ Rerank（BGE-Reranker）
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  Context        │ ──▶ Top-K 結果拼裝為 prompt
-│  Assembly       │ ──▶ 來源標註（citation）
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  LLM Generation │ ──▶ 帶上下文生成答案
-│  (via Engine)   │ ──▶ 串流返回
-└─────────────────┘
-```
-
-### 5.2 dllm-rag 服務架構
-
-```
-dllm-rag/
-├── src/
-│   ├── main.py              # FastAPI 入口
-│   ├── config.py            # 配置管理
-│   ├── ingestion/
-│   │   ├── __init__.py
-│   │   ├── parser.py        # 文件解析器註冊表
-│   │   ├── pdf_parser.py    # PyMuPDF / marker
-│   │   ├── docx_parser.py   # python-docx
-│   │   └── ocr.py           # surya / easyocr
-│   ├── chunking/
-│   │   ├── __init__.py
-│   │   ├── semantic.py      # 語義分塊
-│   │   └── fixed.py         # 固定長度分塊
-│   ├── embedding/
-│   │   ├── __init__.py
-│   │   ├── model.py         # Embedding 模型封裝
-│   │   └── batch.py         # 批次編碼
-│   ├── retrieval/
-│   │   ├── __init__.py
-│   │   ├── qdrant_client.py # Qdrant 操作封裝
-│   │   ├── hybrid.py        # 混合檢索
-│   │   └── reranker.py      # 重排序
-│   ├── api/
-│   │   ├── __init__.py
-│   │   ├── upload.py        # 文件上傳 API
-│   │   ├── query.py         # 檢索 API
-│   │   └── manage.py        # 知識庫管理 API
-│   └── models.py            # Pydantic 模型定義
-├── models/                  # 本地模型快取
-├── requirements.txt
-├── Dockerfile
-└── README.md
 ```
 
 ---
 
-## 六、Agent 架構設計
-
-### 6.1 Agent 執行模型
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Agent Runtime                            │
-├─────────────────────────────────────────────────────────────┤
-│  Input                                                      │
-│  ├── User Query                                             │
-│  ├── Conversation History                                   │
-│  └── Available Tools                                        │
-├─────────────────────────────────────────────────────────────┤
-│  ReAct Loop                                                 │
-│  Step 1: Thought  ──▶ LLM 推理「我需要查詢資料庫」            │
-│  Step 2: Action  ──▶ 呼叫工具 db_query("SELECT ...")        │
-│  Step 3: Observation ──▶ 工具返回結果                        │
-│  Step 4: Thought  ──▶ 「根據結果，答案是...」                 │
-│  ... (max 10 iterations)                                    │
-├─────────────────────────────────────────────────────────────┤
-│  Output                                                     │
-│  ├── Final Answer                                           │
-│  ├── Tool Calls History                                     │
-│  └── Token Usage                                            │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### 6.2 工具生態
-
-| 工具類型 | 實現 | 用途 |
-|---------|------|------|
-| **Database** | SQLAlchemy + schema introspection | NL2SQL |
-| **File** | 本地檔案系統操作 | 讀寫企業文件 |
-| **Email** | SMTP / IMAP | 發送報告、摘要 |
-| **Web** | httpx + BeautifulSoup | 爬取公開資料 |
-| **Calendar** | CalDAV / Google Calendar API | 排程 |
-| **MCP** | MCP client SDK | 連接外部工具服務 |
-
-### 6.3 MCP 整合
-
-```
-dllm-agent/
-├── src/
-│   ├── main.py
-│   ├── agent/
-│   │   ├── __init__.py
-│   │   ├── react.py         # ReAct loop 實現
-│   │   ├── planner.py       # 任務規劃（複雜任務拆解）
-│   │   └── executor.py      # 工具執行器
-│   ├── tools/
-│   │   ├── __init__.py
-│   │   ├── registry.py      # 工具註冊表
-│   │   ├── builtin/         # 內建工具
-│   │   │   ├── db_tool.py
-│   │   │   ├── file_tool.py
-│   │   │   └── email_tool.py
-│   │   └── mcp/             # MCP 工具
-│   │       ├── client.py    # MCP client
-│   │       └── adapter.py   # MCP → 內部工具格式轉換
-│   ├── api/
-│   │   ├── run.py           # /v1/agent/run
-│   │   └── tools.py         # /v1/agent/tools
-│   └── models.py
-├── requirements.txt
-├── Dockerfile
-└── README.md
-```
-
----
-
-## 七、雲端連接器設計
+## 六、雲端連接器設計
 
 ### 7.1 混合雲路由邏輯
 

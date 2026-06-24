@@ -1,17 +1,40 @@
 //! 模型管理指令（pull / list / rm）
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 
 const DEFAULT_MODEL_DIR: &str = ".dllm/models";
+const INDEX_FILE: &str = ".index.json";
 
 fn models_dir() -> PathBuf {
-    let home = std::env::var("DLLM_MODEL_DIR")
+    std::env::var("DLLM_MODEL_DIR")
         .unwrap_or_else(|_| {
             let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
             format!("{}/{}", home, DEFAULT_MODEL_DIR)
-        });
-    PathBuf::from(home)
+        })
+        .into()
+}
+
+fn index_path() -> PathBuf {
+    models_dir().join(INDEX_FILE)
+}
+
+fn read_index() -> HashMap<String, serde_json::Value> {
+    let path = index_path();
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn write_index(index: &HashMap<String, serde_json::Value>) {
+    if let Some(parent) = index_path().parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(content) = serde_json::to_string_pretty(index) {
+        let _ = std::fs::write(index_path(), content);
+    }
 }
 
 fn read_config_json(model_path: &PathBuf) -> Option<serde_json::Value> {
@@ -97,18 +120,17 @@ except Exception as e:
         return Err("模型下載失敗，請檢查網路連線與模型名稱".to_string());
     }
 
-    // 顯示模型資訊
+    // 顯示模型資訊並寫入 index
     if let Some(config) = read_config_json(&dest) {
         let model_type = config.get("model_type").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let hidden_size = config.get("hidden_size").and_then(|v| v.as_u64()).unwrap_or(0);
-        let num_layers = config.get("num_hidden_layers").and_then(|v| v.as_u64()).unwrap_or(0);
-        let vocab_size = config.get("vocab_size").and_then(|v| v.as_u64()).unwrap_or(0);
         let ctx_len = config.get("max_position_embeddings")
             .or_else(|| config.get("max_seq_len"))
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-
+        let hidden_size = config.get("hidden_size").and_then(|v| v.as_u64()).unwrap_or(0);
+        let num_layers = config.get("num_hidden_layers").and_then(|v| v.as_u64()).unwrap_or(0);
         let size = format_size(dir_size(&dest));
+
         println!();
         println!("📋 模型資訊:");
         println!("   類型: {}", model_type);
@@ -116,7 +138,19 @@ except Exception as e:
         if ctx_len > 0 { println!("   上下文: {} tokens", ctx_len); }
         if hidden_size > 0 { println!("   維度: {}", hidden_size); }
         if num_layers > 0 { println!("   層數: {}", num_layers); }
-        if vocab_size > 0 { println!("   詞彙量: {}", vocab_size); }
+
+        // 寫入 metadata index
+        let model_name = dest.file_name().and_then(|n| n.to_str()).unwrap_or("model");
+        let mut index = read_index();
+        index.insert(model_name.to_string(), serde_json::json!({
+            "repo_id": repo_id,
+            "model_type": model_type,
+            "context_length": ctx_len,
+            "size_bytes": dir_size(&dest),
+            "hidden_size": hidden_size,
+            "num_layers": num_layers,
+        }));
+        write_index(&index);
     }
 
     Ok(())

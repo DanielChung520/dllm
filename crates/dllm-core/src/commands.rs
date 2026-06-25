@@ -392,15 +392,24 @@ pub async fn check_status() -> Result<(), String> {
     }
 
     // 檢查 vLLM 後端
-    let vllm_url = std::env::var("VLLM_DIRECT_URL").unwrap_or_else(|_| "http://127.0.0.1:18001".to_string());
-    match client.get(&format!("{}/v1/models", vllm_url)).send().await {
+    let backend = DllmConfig::effective_backend();
+    let backend_title = match backend {
+        dllm_shared::engine::GpuBackend::AppleSilicon => "oMLX/MLX 後端",
+        _ => "vLLM 後端",
+    };
+    let backend_url = if matches!(backend, dllm_shared::engine::GpuBackend::AppleSilicon) {
+        std::env::var("VLLM_DIRECT_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string())
+    } else {
+        std::env::var("VLLM_DIRECT_URL").unwrap_or_else(|_| "http://127.0.0.1:18001".to_string())
+    };
+    match client.get(&format!("{}/v1/models", backend_url)).send().await {
         Ok(resp) => {
             if let Ok(models) = resp.json::<serde_json::Value>().await {
                 let count = models["data"].as_array().map(|a| a.len()).unwrap_or(0);
-                println!("vLLM 後端: 運行中 ({} 個模型載入)", count);
+                println!("{}: 運行中 ({} 個模型載入)", backend_title, count);
             }
         }
-        Err(_) => println!("vLLM 後端: 未運行"),
+        Err(_) => println!("{}: 未運行", backend_title),
     }
 
     // 系統資源
@@ -490,6 +499,7 @@ impl DllmConfig {
             Some("nvidia") => dllm_shared::engine::GpuBackend::NvidiaCuda,
             Some("amd") => dllm_shared::engine::GpuBackend::AmdRocm,
             Some("intel") => dllm_shared::engine::GpuBackend::IntelXpu,
+            Some("mac") => dllm_shared::engine::GpuBackend::AppleSilicon,
             _ => dllm_shared::engine::detect_gpu_backend(),
         }
     }
@@ -508,8 +518,9 @@ impl DllmConfig {
                     "nvidia" | "cuda" => self.backend = Some("nvidia".to_string()),
                     "amd" | "rocm" => self.backend = Some("amd".to_string()),
                     "intel" | "xpu" => self.backend = Some("intel".to_string()),
+                    "mac" | "apple" | "mlx" => self.backend = Some("mac".to_string()),
                     "auto" => self.backend = None,
-                    _ => return Err(format!("不支援的後端: {}\n可選: auto, nvidia, amd, intel", value)),
+                    _ => return Err(format!("不支援的後端: {}\n可選: auto, nvidia, amd, intel, mac", value)),
                 }
             }
             _ => return Err(format!("未知設定: {}\n可用: port, default_model, log_dir, model_dir, vllm_url, memory_guard, api_key, backend", key)),
@@ -552,7 +563,7 @@ pub fn handle_config(action: super::ConfigAction) -> Result<(), String> {
             println!();
             println!("設定方式: dllm config set <key> <value>");
             println!("  可用: port, default_model, log_dir, model_dir, vllm_url, memory_guard, api_key, backend");
-            println!("  backend 可設: auto, nvidia, amd, intel");
+            println!("  backend 可設: auto, nvidia, amd, intel, mac");
         }
         super::ConfigAction::Set { key, value } => {
             cfg.set(&key, &value)?;

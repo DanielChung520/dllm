@@ -122,6 +122,8 @@ pub enum GpuBackend {
     AmdRocm,
     /// Intel XPU（Arc A 系列以上）
     IntelXpu,
+    /// Apple Silicon（Mac，透過 oMLX/MLX）
+    AppleSilicon,
     /// 無 GPU（CPU only，不建議）
     CpuOnly,
 }
@@ -132,26 +134,27 @@ impl GpuBackend {
             GpuBackend::NvidiaCuda => "NVIDIA CUDA",
             GpuBackend::AmdRocm => "AMD ROCm",
             GpuBackend::IntelXpu => "Intel XPU",
+            GpuBackend::AppleSilicon => "Apple Silicon (MLX/oMLX)",
             GpuBackend::CpuOnly => "CPU only",
         }
     }
 
-    /// 對應的 Python pip 套件名稱
     pub fn pip_package(&self) -> &'static str {
         match self {
             GpuBackend::NvidiaCuda => "vllm",
             GpuBackend::AmdRocm => "vllm-rocm",
             GpuBackend::IntelXpu => "vllm-intel",
+            GpuBackend::AppleSilicon => "MLX (oMLX)",
             GpuBackend::CpuOnly => "vllm",
         }
     }
 
-    /// GPU 監控指令
     pub fn monitor_cmd(&self) -> &'static [&'static str] {
         match self {
             GpuBackend::NvidiaCuda => &["nvidia-smi"],
             GpuBackend::AmdRocm => &["rocm-smi"],
             GpuBackend::IntelXpu => &["xpu-smi"],
+            GpuBackend::AppleSilicon => &["sysctl", "-n", "hw.memsize"],
             GpuBackend::CpuOnly => &["echo"],
         }
     }
@@ -175,12 +178,22 @@ impl std::fmt::Display for Platform {
     }
 }
 
-/// 執行時期偵測 GPU 後端（自動選擇 nvidia / amd / intel）
+/// 執行時期偵測 GPU 後端（自動選擇 nvidia / amd / intel / mac）
 pub fn detect_gpu_backend() -> GpuBackend {
-    // 依序檢查：nvidia-smi → rocm-smi → xpu-smi
+    // Apple Silicon 偵測
+    if cfg!(target_os = "macos") {
+        if std::process::Command::new("sysctl")
+            .args(["-n", "machdep.cpu.brand_string"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("Apple"))
+            .unwrap_or(false)
+        {
+            return GpuBackend::AppleSilicon;
+        }
+    }
+
+    // NVIDIA CUDA
     if std::process::Command::new("nvidia-smi")
-        .arg("--query-gpu=name,driver_version")
-        .arg("--format=csv,noheader")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
@@ -190,6 +203,7 @@ pub fn detect_gpu_backend() -> GpuBackend {
         return GpuBackend::NvidiaCuda;
     }
 
+    // AMD ROCm
     if std::process::Command::new("rocm-smi")
         .arg("--showproductname")
         .stdout(std::process::Stdio::null())
@@ -201,6 +215,7 @@ pub fn detect_gpu_backend() -> GpuBackend {
         return GpuBackend::AmdRocm;
     }
 
+    // Intel XPU
     if std::process::Command::new("xpu-smi")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

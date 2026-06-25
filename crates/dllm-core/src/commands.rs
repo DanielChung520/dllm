@@ -227,27 +227,26 @@ pub fn remove_model(model: &str) -> Result<(), String> {
 
 /// 在終端機直接與模型對話（類似 ollama run）
 pub async fn run_model(model: &str, prompt: Option<&str>) -> Result<(), String> {
-    let models_dir = models_dir();
-    let model_path = models_dir.join(model);
+    // 檢查是否為 Mac 後端（由 oMLX 管理模型，不需本地目錄）
+    let is_mac = matches!(DllmConfig::effective_backend(), dllm_shared::engine::GpuBackend::AppleSilicon);
     
-    if !model_path.exists() || !model_path.join("config.json").exists() {
-        return Err(format!("模型 '{}' 不存在。請先用 `dllm pull {}` 下載。", model, model));
+    if !is_mac {
+        let model_path = models_dir().join(model);
+        if !model_path.exists() || !model_path.join("config.json").exists() {
+            return Err(format!("模型 '{}' 不存在。請先用 `dllm pull {}` 下載。", model, model));
+        }
     }
 
-    // 從 index 或 config 取得模型資訊
-    let index = read_index();
-    let repo_id = index.get(model)
-        .and_then(|m| m.get("repo_id"))
-        .and_then(|v| v.as_str())
-        .unwrap_or(model);
+    let model_api_id = if is_mac { model.to_string() } else {
+        models_dir().join(model).to_string_lossy().to_string()
+    };
 
-    println!("🚀 正在載入模型: {} ({})", model, repo_id);
+    println!("🚀 正在載入模型: {} ({})", model, model_api_id);
     println!("   輸入 /bye 或 Ctrl+C 結束對話");
     println!("   輸入 /clear 清除對話歷史");
     println!("   輸入 /help 查看更多指令");
     println!();
 
-    // 先測試 API 是否可用（連接到本機 dllm-core 或 vLLM）
     let api_base = if let Ok(url) = std::env::var("DLLM_RUN_API") {
         url
     } else {
@@ -256,7 +255,6 @@ pub async fn run_model(model: &str, prompt: Option<&str>) -> Result<(), String> 
 
     let client = reqwest::Client::new();
 
-    // 測試連線
     match client.get(&format!("{}/models", api_base)).send().await {
         Ok(_) => {}
         Err(_) => {
@@ -265,9 +263,6 @@ pub async fn run_model(model: &str, prompt: Option<&str>) -> Result<(), String> 
             return Err("連線失敗".to_string());
         }
     }
-    
-    // 取得 API 用的 model id
-    let model_api_id = model_path.to_string_lossy();
 
     if let Some(single_prompt) = prompt {
         let body = serde_json::json!({

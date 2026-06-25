@@ -460,6 +460,8 @@ pub struct DllmConfig {
     pub vllm_url: Option<String>,
     pub memory_guard: Option<String>,
     pub api_key: Option<String>,
+    /// GPU 後端：auto, nvidia, amd, intel
+    pub backend: Option<String>,
 }
 
 impl DllmConfig {
@@ -481,6 +483,17 @@ impl DllmConfig {
             .map_err(|e| format!("{}", e))
     }
 
+    /// 取得有效的 GPU 後端（config 指定 or 自動偵測）
+    pub fn effective_backend() -> dllm_shared::engine::GpuBackend {
+        let cfg = Self::load();
+        match cfg.backend.as_deref() {
+            Some("nvidia") => dllm_shared::engine::GpuBackend::NvidiaCuda,
+            Some("amd") => dllm_shared::engine::GpuBackend::AmdRocm,
+            Some("intel") => dllm_shared::engine::GpuBackend::IntelXpu,
+            _ => dllm_shared::engine::detect_gpu_backend(),
+        }
+    }
+
     pub fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
         match key {
             "port" => self.port = Some(value.parse().map_err(|_| "port 需為整數")?),
@@ -490,7 +503,16 @@ impl DllmConfig {
             "vllm_url" => self.vllm_url = Some(value.to_string()),
             "memory_guard" => self.memory_guard = Some(value.to_string()),
             "api_key" => self.api_key = Some(value.to_string()),
-            _ => return Err(format!("未知設定: {}\n可用: port, default_model, log_dir, model_dir, vllm_url, memory_guard, api_key", key)),
+            "backend" => {
+                match value {
+                    "nvidia" | "cuda" => self.backend = Some("nvidia".to_string()),
+                    "amd" | "rocm" => self.backend = Some("amd".to_string()),
+                    "intel" | "xpu" => self.backend = Some("intel".to_string()),
+                    "auto" => self.backend = None,
+                    _ => return Err(format!("不支援的後端: {}\n可選: auto, nvidia, amd, intel", value)),
+                }
+            }
+            _ => return Err(format!("未知設定: {}\n可用: port, default_model, log_dir, model_dir, vllm_url, memory_guard, api_key, backend", key)),
         }
         self.save()?;
         println!("✅ {} = {}", key, value);
@@ -508,6 +530,7 @@ impl Default for DllmConfig {
             vllm_url: Some("http://127.0.0.1:18001".to_string()),
             memory_guard: Some("balanced".to_string()),
             api_key: None,
+            backend: None,
         }
     }
 }
@@ -516,9 +539,20 @@ pub fn handle_config(action: super::ConfigAction) -> Result<(), String> {
     let mut cfg = DllmConfig::load();
     match action {
         super::ConfigAction::Show => {
+            // 偵測硬體資訊
+            let backend = dllm_shared::engine::detect_gpu_backend();
+            let hw = dllm_shared::engine::detect_hardware_sku();
             println!("📋 dllm 配置 ({})", DllmConfig::config_path().display());
             println!("{}", serde_json::to_string_pretty(&cfg).unwrap_or_default());
-            println!("\n設定方式: dllm config set <key> <value>");
+            println!();
+            println!("🔍 偵測到的硬體:");
+            println!("   平台: {}", std::env::consts::ARCH);
+            println!("   GPU:  {} ({})", backend.label(), hw.label());
+            println!("   vLLM: {} 套件", backend.pip_package());
+            println!();
+            println!("設定方式: dllm config set <key> <value>");
+            println!("  可用: port, default_model, log_dir, model_dir, vllm_url, memory_guard, api_key, backend");
+            println!("  backend 可設: auto, nvidia, amd, intel");
         }
         super::ConfigAction::Set { key, value } => {
             cfg.set(&key, &value)?;

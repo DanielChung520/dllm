@@ -113,24 +113,105 @@ impl Default for EngineConfig {
     }
 }
 
+/// GPU 後端類型（執行時期偵測，非編譯期）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GpuBackend {
+    /// NVIDIA CUDA（DGX Spark、RTX、H100 等）
+    NvidiaCuda,
+    /// AMD ROCm（RX 7900、Instinct 等）
+    AmdRocm,
+    /// Intel XPU（Arc A 系列以上）
+    IntelXpu,
+    /// 無 GPU（CPU only，不建議）
+    CpuOnly,
+}
+
+impl GpuBackend {
+    pub fn label(&self) -> &'static str {
+        match self {
+            GpuBackend::NvidiaCuda => "NVIDIA CUDA",
+            GpuBackend::AmdRocm => "AMD ROCm",
+            GpuBackend::IntelXpu => "Intel XPU",
+            GpuBackend::CpuOnly => "CPU only",
+        }
+    }
+
+    /// 對應的 Python pip 套件名稱
+    pub fn pip_package(&self) -> &'static str {
+        match self {
+            GpuBackend::NvidiaCuda => "vllm",
+            GpuBackend::AmdRocm => "vllm-rocm",
+            GpuBackend::IntelXpu => "vllm-intel",
+            GpuBackend::CpuOnly => "vllm",
+        }
+    }
+
+    /// GPU 監控指令
+    pub fn monitor_cmd(&self) -> &'static [&'static str] {
+        match self {
+            GpuBackend::NvidiaCuda => &["nvidia-smi"],
+            GpuBackend::AmdRocm => &["rocm-smi"],
+            GpuBackend::IntelXpu => &["xpu-smi"],
+            GpuBackend::CpuOnly => &["echo"],
+        }
+    }
+}
+
 /// 平台類型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Platform {
     MacAppleSilicon,
-    NvidiaLinux,
-    NvidiaWindows,
-    CpuOnly,
+    Linux,
+    Windows,
 }
 
 impl std::fmt::Display for Platform {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Platform::MacAppleSilicon => write!(f, "mac-apple-silicon"),
-            Platform::NvidiaLinux => write!(f, "nvidia-linux"),
-            Platform::NvidiaWindows => write!(f, "nvidia-windows"),
-            Platform::CpuOnly => write!(f, "cpu-only"),
+            Platform::MacAppleSilicon => write!(f, "mac"),
+            Platform::Linux => write!(f, "linux"),
+            Platform::Windows => write!(f, "windows"),
         }
     }
+}
+
+/// 執行時期偵測 GPU 後端（自動選擇 nvidia / amd / intel）
+pub fn detect_gpu_backend() -> GpuBackend {
+    // 依序檢查：nvidia-smi → rocm-smi → xpu-smi
+    if std::process::Command::new("nvidia-smi")
+        .arg("--query-gpu=name,driver_version")
+        .arg("--format=csv,noheader")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+    {
+        return GpuBackend::NvidiaCuda;
+    }
+
+    if std::process::Command::new("rocm-smi")
+        .arg("--showproductname")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+    {
+        return GpuBackend::AmdRocm;
+    }
+
+    if std::process::Command::new("xpu-smi")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+    {
+        return GpuBackend::IntelXpu;
+    }
+
+    GpuBackend::CpuOnly
 }
 
 /// 硬體 SKU — 決定預設配置
@@ -191,17 +272,13 @@ pub fn detect_platform() -> Platform {
         }
     }
     
-    if std::process::Command::new("nvidia-smi")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-    {
-        return Platform::NvidiaLinux;
-    }
+    #[cfg(target_os = "linux")]
+    { return Platform::Linux; }
     
-    Platform::CpuOnly
+    #[cfg(target_os = "windows")]
+    { return Platform::Windows; }
+    
+    Platform::Linux
 }
 
 /// 偵測硬體 SKU — 結合平台 + 記憶體大小
@@ -217,7 +294,7 @@ pub fn detect_hardware_sku() -> HardwareSku {
                 HardwareSku::MacMini64
             }
         }
-        Platform::NvidiaLinux | Platform::NvidiaWindows => {
+        Platform::Linux | Platform::Windows => {
             let mem_gb = get_total_memory_gb();
             if mem_gb >= 160 {
                 HardwareSku::EnterpriseH100
@@ -227,7 +304,6 @@ pub fn detect_hardware_sku() -> HardwareSku {
                 HardwareSku::MacMini64
             }
         }
-        Platform::CpuOnly => HardwareSku::Unknown,
     }
 }
 
